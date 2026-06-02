@@ -1,0 +1,55 @@
+# --- Python bytecode & caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Virtual environments (recreate with `uv sync`) ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Secrets & local config (never commit) ---
+.env
+.env.*
+!.env.example
+
+# --- Test & coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# --- Type checkers & linters ---
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# --- Build / packaging ---
+dist/
+build/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+wheels/
+
+# --- Logs & databases (local dev) ---
+*.log
+*.sqlite
+*.sqlite3
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- IDE / editor (optional; remove a block if you want to share settings) ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
