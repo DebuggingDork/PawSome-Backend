@@ -12,7 +12,7 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        primary_true=True,
+        primary_key=True,
         default=uuid.uuid4,
     )
 
