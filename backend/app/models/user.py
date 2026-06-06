@@ -1,11 +1,15 @@
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean,Column,DateTime,String,func,Integer
+from sqlalchemy import Boolean, DateTime, String, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped,mapped_column,relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.pet_profile import PetProfile
 
 class User(Base):
     __tablename__ = "users"
@@ -55,6 +59,6 @@ class User(Base):
 
 
     pet_profiles: Mapped[list["PetProfile"]] = relationship(
-    back_populates="user",
-    cascade="all, delete-orphan",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )
