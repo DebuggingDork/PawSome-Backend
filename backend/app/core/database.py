@@ -18,6 +18,6 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
     )
 
-async def get_db() -> AsyncGenerator[AsyncSession,None]: #AsyncGenerator[YieldType, SendType]
+async def get_db() -> AsyncGenerator[AsyncSession,None]: #AsyncGenerator[YieldType, SendType] 
     async with AsyncSessionLocal() as session: #AsyncSessionLocal is a context manager that returns an AsyncSession object
         yield session

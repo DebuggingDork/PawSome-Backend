@@ -23,6 +23,8 @@ htmlcov/
 .tox/
 .nox/
 
+Pawsome.pdf
+
 # --- Type checkers & linters ---
 .mypy_cache/
 .ruff_cache/
