@@ -10,7 +10,8 @@ class Base(DeclarativeBase): #Base lives here for now. Some teams move it to mod
 engine = create_async_engine(
     settings.database_url,
     echo=settings.app_env == "development",
-    )
+    connect_args=settings.database_connect_args,
+)
 
 AsyncSessionLocal = async_sessionmaker(
     engine,
