@@ -1,7 +1,9 @@
+import enum
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -10,6 +12,15 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.user import User
+
+
+class PetSpecies(str, enum.Enum):
+    DOG = "dog"
+    CAT = "cat"
+    RABBIT = "rabbit"
+    BIRD = "bird"
+    OTHER = "other"
+
 
 class PetProfile(Base):
     __tablename__ = "pet_profiles"
@@ -23,6 +34,11 @@ class PetProfile(Base):
         index=True,
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    species: Mapped[PetSpecies] = mapped_column(
+        Enum(PetSpecies, name="pet_species", native_enum=False, length=20),
+        nullable=False,
+        index=True,
+    )
     breed: Mapped[str] = mapped_column(String(100), nullable=False)
     age_months: Mapped[int] = mapped_column(Integer, nullable=False)
     gender: Mapped[str] = mapped_column(String(20), nullable=False)  # male/female
