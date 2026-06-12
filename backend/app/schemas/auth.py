@@ -3,25 +3,66 @@ from pydantic import BaseModel, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
-    email : EmailStr
-    password : str = Field(min_length=8, max_length=128, description="Password must be at least 8 characters long")
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128, description="Password must be at least 8 characters long")
 
 class LoginRequest(BaseModel):
-    email : EmailStr
-    password : str 
+    email: EmailStr
+    password: str 
 
 class RefreshRequest(BaseModel):
-    refresh_token : str = Field(description="Refresh token")
+    refresh_token: str = Field(description="Refresh token")
 
 class TokenResponse(BaseModel):
-    access_token : str = Field(description="Access token")
-    refresh_token : str = Field(description="Refresh token")
-    token_type : str = Field(description="Token type")
+    access_token: str = Field(description="Access token")
+    refresh_token: str = Field(description="Refresh token")
+    token_type: str = Field(description="Token type")
 
 class UserResponse(BaseModel):
     id: UUID
-    email:EmailStr
-    is_verified:bool
+    email: EmailStr
+    is_verified: bool
+
+    model_config = {
+        "from_attributes": True,
+    }
+
+
+class UserProfileUpdate(BaseModel):
+    """Schema for updating user profile"""
+    full_name: str | None = Field(default=None, max_length=200)
+    occupation: str | None = Field(default=None, max_length=200)
+    bio: str | None = Field(default=None, max_length=2000)
+    address: str | None = Field(default=None, max_length=500)
+    profile_photo_url: str | None = Field(default=None, max_length=512)
+
+
+class UserPublicProfile(BaseModel):
+    """Public profile - visible to anyone who can see their pets"""
+    id: UUID
+    full_name: str | None
+    occupation: str | None
+    bio: str | None
+    profile_photo_url: str | None
+
+    model_config = {
+        "from_attributes": True,
+    }
+
+
+class UserPrivateProfile(UserPublicProfile):
+    """Private profile - includes address, only visible to matched connections"""
+    address: str | None
+
+    model_config = {
+        "from_attributes": True,
+    }
+
+
+class UserFullProfile(UserPrivateProfile):
+    """Full profile - includes email, only for the owner"""
+    email: EmailStr
+    is_verified: bool
 
     model_config = {
         "from_attributes": True,
