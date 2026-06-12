@@ -36,8 +36,8 @@ async def swipe_on_pet(
 ):
     """
     Swipe on a pet (like or skip).
-    - Right swipe (like): If target pet also liked you, creates a match
-    - Left swipe (skip): No match, just records the swipe
+    - Right swipe (like): Sends notification to target pet owner, they must accept/reject
+    - Left swipe (skip): No notification sent
     
     Validates:
     - Both pets exist and are active
@@ -113,57 +113,18 @@ async def swipe_on_pet(
     )
     db.add(swipe)
     
-    is_match = False
-    match_id = None
-    
-    # If it's a LIKE, check for mutual match
+    # If it's a LIKE, send notification to target pet owner (no auto-match)
     if body.action == "like":
-        # Check if target pet also liked us
-        mutual_like = await db.execute(
-            select(Swipe).where(
-                Swipe.swiper_pet_id == body.target_pet_id,
-                Swipe.target_pet_id == body.pet_id,
-                Swipe.action == SwipeAction.LIKE,
-            )
+        # Send "NEW_LIKE" notification to target pet owner
+        notification_target = Notification(
+            user_id=target_pet.user_id,
+            notification_type=NotificationType.NEW_LIKE,
+            pet_id=body.target_pet_id,
+            related_pet_id=body.pet_id,
+            match_id=None,  # No match yet
+            message=f"{swiper_pet.name} is interested in {target_pet.name}!",
         )
-        
-        if mutual_like.scalar_one_or_none():
-            # It's a match! Create the match record
-            is_match = True
-            
-            # Store pets in consistent order (smaller UUID first)
-            pet1_id, pet2_id = sorted([body.pet_id, body.target_pet_id])
-            
-            match = Match(
-                pet1_id=pet1_id,
-                pet2_id=pet2_id,
-            )
-            db.add(match)
-            await db.flush()  # Get the match ID
-            match_id = match.id
-            
-            # Create notifications for BOTH users
-            # Notification for current user
-            notification_user = Notification(
-                user_id=user.id,
-                notification_type=NotificationType.NEW_MATCH,
-                pet_id=body.pet_id,
-                related_pet_id=body.target_pet_id,
-                match_id=match_id,
-                message=f"It's a match! {swiper_pet.name} and {target_pet.name} liked each other!",
-            )
-            db.add(notification_user)
-            
-            # Notification for target pet owner
-            notification_target = Notification(
-                user_id=target_pet.user_id,
-                notification_type=NotificationType.NEW_MATCH,
-                pet_id=body.target_pet_id,
-                related_pet_id=body.pet_id,
-                match_id=match_id,
-                message=f"It's a match! {target_pet.name} and {swiper_pet.name} liked each other!",
-            )
-            db.add(notification_target)
+        db.add(notification_target)
     
     await db.commit()
     await db.refresh(swipe)
@@ -172,8 +133,8 @@ async def swipe_on_pet(
         swiper_pet_id=swipe.swiper_pet_id,
         target_pet_id=swipe.target_pet_id,
         action=swipe.action.value,
-        is_match=is_match,
-        match_id=match_id,
+        is_match=False,  # No auto-match anymore
+        match_id=None,
         created_at=swipe.created_at,
     )
 
@@ -470,3 +431,142 @@ async def get_swipe_history(
             })
     
     return {"swipes": result, "total": len(result)}
+
+
+
+@router.post("/likes/{notification_id}/accept")
+async def accept_like(
+    notification_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Accept a like notification - creates a match between the two pets.
+    """
+    
+    # Get the notification
+    notif_result = await db.execute(
+        select(Notification).where(
+            Notification.id == notification_id,
+            Notification.user_id == user.id,
+            Notification.notification_type == NotificationType.NEW_LIKE,
+        )
+    )
+    notification = notif_result.scalar_one_or_none()
+    
+    if not notification:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Like notification not found",
+        )
+    
+    # Check if match already exists
+    pet1_id, pet2_id = sorted([notification.pet_id, notification.related_pet_id])
+    existing_match = await db.execute(
+        select(Match).where(
+            Match.pet1_id == pet1_id,
+            Match.pet2_id == pet2_id,
+        )
+    )
+    
+    if existing_match.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Match already exists",
+        )
+    
+    # Get both pets for names
+    pets_result = await db.execute(
+        select(PetProfile).where(
+            PetProfile.id.in_([notification.pet_id, notification.related_pet_id])
+        )
+    )
+    pets = {pet.id: pet for pet in pets_result.scalars().all()}
+    your_pet = pets.get(notification.pet_id)
+    other_pet = pets.get(notification.related_pet_id)
+    
+    if not your_pet or not other_pet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="One or both pets not found",
+        )
+    
+    # Create the match
+    match = Match(
+        pet1_id=pet1_id,
+        pet2_id=pet2_id,
+    )
+    db.add(match)
+    await db.flush()
+    
+    # Create match notifications for BOTH users
+    # Notification for you (acceptor)
+    your_match_notif = Notification(
+        user_id=user.id,
+        notification_type=NotificationType.NEW_MATCH,
+        pet_id=notification.pet_id,
+        related_pet_id=notification.related_pet_id,
+        match_id=match.id,
+        message=f"It's a match! {your_pet.name} accepted {other_pet.name}'s interest!",
+    )
+    db.add(your_match_notif)
+    
+    # Notification for other user (original liker)
+    other_match_notif = Notification(
+        user_id=other_pet.user_id,
+        notification_type=NotificationType.NEW_MATCH,
+        pet_id=notification.related_pet_id,
+        related_pet_id=notification.pet_id,
+        match_id=match.id,
+        message=f"Great news! {your_pet.name} accepted {other_pet.name}'s interest!",
+    )
+    db.add(other_match_notif)
+    
+    # Mark the original like notification as read
+    notification.is_read = True
+    notification.read_at = datetime.now()
+    
+    await db.commit()
+    await db.refresh(match)
+    
+    return {
+        "match_id": str(match.id),
+        "message": f"Match created! You can now chat with {other_pet.name}'s owner.",
+    }
+
+
+@router.post("/likes/{notification_id}/reject")
+async def reject_like(
+    notification_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Reject a like notification - no match is created.
+    """
+    
+    # Get the notification
+    notif_result = await db.execute(
+        select(Notification).where(
+            Notification.id == notification_id,
+            Notification.user_id == user.id,
+            Notification.notification_type == NotificationType.NEW_LIKE,
+        )
+    )
+    notification = notif_result.scalar_one_or_none()
+    
+    if not notification:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Like notification not found",
+        )
+    
+    # Just mark as read, no match created
+    notification.is_read = True
+    notification.read_at = datetime.now()
+    
+    await db.commit()
+    
+    return {
+        "message": "Like rejected. No match created.",
+    }
