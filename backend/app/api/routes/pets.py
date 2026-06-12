@@ -36,7 +36,8 @@ async def browse_pets(
 ):
     """Public catalog of all active pets — no account needed, like browsing
     products in a store. Coordinates are never exposed here. Each item carries
-    primary_photo_url for the card image; `total` lets the frontend paginate."""
+    primary_photo_url for the card image; `total` lets the frontend paginate.
+    Now includes basic owner info (name, occupation, profile photo)."""
     filters = [PetProfile.is_active.is_(True)]
 
     if species is not None:
@@ -58,8 +59,22 @@ async def browse_pets(
         .offset(offset)
     )
 
+    pets = result.scalars().all()
+    
+    # Fetch owner info for all pets
+    user_ids = [p.user_id for p in pets]
+    users_result = await db.execute(select(User).where(User.id.in_(user_ids)))
+    users_map = {u.id: u for u in users_result.scalars().all()}
+    
+    # Build response with owner info
+    items = []
+    for pet in pets:
+        pet_dict = PetPublicResponse.model_validate(pet).model_dump()
+        pet_dict["owner"] = users_map.get(pet.user_id)
+        items.append(PetPublicResponse.model_validate(pet_dict))
+
     return PetListResponse(
-        items=[PetPublicResponse.model_validate(p) for p in result.scalars().all()],
+        items=items,
         total=total,
         limit=limit,
         offset=offset,
@@ -125,7 +140,7 @@ async def get_pet(
 ):
     """View any active pet — public, no account needed (like a product detail
     page). The owner, when logged in, gets full data including coordinates;
-    everyone else gets the public view."""
+    everyone else gets the public view with owner info."""
     result = await db.execute(
         select(PetProfile).where(
             PetProfile.id == pet_id,
@@ -142,7 +157,11 @@ async def get_pet(
 
     if user is not None and pet.user_id == user.id:
         return PetResponse.model_validate(pet)
-    return PetPublicResponse.model_validate(pet)
+    
+    # Public view - include owner info
+    pet_dict = PetPublicResponse.model_validate(pet).model_dump()
+    pet_dict["owner"] = pet.user
+    return PetPublicResponse.model_validate(pet_dict)
 
 
 @router.patch("/{pet_id}", response_model=PetResponse)

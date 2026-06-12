@@ -7,6 +7,18 @@ from pydantic import BaseModel, Field
 from app.models.pet_profile import PetSpecies
 
 
+class PetOwnerBasicInfo(BaseModel):
+    """Basic owner info shown with pets in browse/detail views"""
+    id: UUID
+    full_name: str | None
+    occupation: str | None
+    profile_photo_url: str | None
+
+    model_config = {
+        "from_attributes": True,
+    }
+
+
 class PetCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     species: PetSpecies
@@ -54,6 +66,7 @@ class PetPublicResponse(BaseModel):
     created_at: datetime
     primary_photo_url: str | None
     photos: list[PetPhotoResponse]
+    owner: PetOwnerBasicInfo  # NEW: Show owner info in browse
 
     model_config = {
         "from_attributes": True,
