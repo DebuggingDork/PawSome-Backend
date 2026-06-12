@@ -94,7 +94,7 @@ async def confirm_photo_upload(
     db: AsyncSession = Depends(get_db),
 ):
     """Step 2 of upload: after PUTting the file, confirm it so it's saved
-    and served. The first photo automatically becomes the primary one."""
+    and served. The first photo automatically becomes the primary one and activates the pet."""
     _require_r2_configured()
 
     # The key embeds the pet id, so one owner can't claim another pet's upload.
@@ -133,14 +133,21 @@ async def confirm_photo_upload(
             detail=f"Image exceeds {r2.MAX_PHOTO_BYTES // (1024 * 1024)} MB limit",
         )
 
+    is_first_photo = (count == 0)
+    
     photo = PetPhoto(
         pet_id=pet.id,
         object_key=body.object_key,
         url=r2.public_url(body.object_key),
-        is_primary=(count == 0),
+        is_primary=is_first_photo,
         sort_order=count,
     )
     db.add(photo)
+    
+    # Activate pet when first photo is uploaded
+    if is_first_photo and not pet.is_active:
+        pet.is_active = True
+    
     await db.commit()
     await db.refresh(photo)
 
@@ -172,10 +179,19 @@ async def delete_photo(
     db: AsyncSession = Depends(get_db),
 ):
     """Remove the photo from storage and the profile. If it was the primary,
-    the oldest remaining photo is promoted."""
+    the oldest remaining photo is promoted. Cannot delete the last photo - pets require at least one image."""
     _require_r2_configured()
 
     photo = await _get_owned_photo(photo_id, pet, db)
+    
+    # Check if this is the last photo
+    current_count = await _photo_count(db, pet.id)
+    if current_count <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete the last photo. Pets must have at least one image.",
+        )
+    
     was_primary = photo.is_primary
     object_key = photo.object_key
 
