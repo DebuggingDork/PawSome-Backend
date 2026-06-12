@@ -529,6 +529,39 @@ async def accept_like(
     await db.commit()
     await db.refresh(match)
     
+    # Grant achievements for both users
+    from app.models.user_achievement import AchievementType
+    from app.services import achievements
+    from sqlalchemy import func
+    
+    # Count matches for both users
+    for owner_id in [user.id, other_pet.user_id]:
+        # Count total matches for this user
+        owner_pets_result = await db.execute(
+            select(PetProfile.id).where(PetProfile.user_id == owner_id)
+        )
+        owner_pet_ids = [row[0] for row in owner_pets_result.all()]
+        
+        if owner_pet_ids:
+            match_count_result = await db.execute(
+                select(func.count())
+                .select_from(Match)
+                .where(
+                    or_(
+                        Match.pet1_id.in_(owner_pet_ids),
+                        Match.pet2_id.in_(owner_pet_ids),
+                    )
+                )
+            )
+            match_count = match_count_result.scalar_one()
+            
+            # Grant first match achievement
+            if match_count == 1:
+                await achievements.grant_achievement(db, owner_id, AchievementType.FIRST_MATCH)
+            # Grant five matches achievement
+            elif match_count == 5:
+                await achievements.grant_achievement(db, owner_id, AchievementType.FIVE_MATCHES)
+    
     return {
         "match_id": str(match.id),
         "message": f"Match created! You can now chat with {other_pet.name}'s owner.",

@@ -150,6 +150,18 @@ async def websocket_chat(
                         await db.commit()
                         await db.refresh(new_message)
                         
+                        # Grant first message achievement
+                        sender_pet_result = await db.execute(
+                            select(PetProfile).where(PetProfile.id == pet_id)
+                        )
+                        sender_pet = sender_pet_result.scalar_one_or_none()
+                        if sender_pet:
+                            from app.models.user_achievement import AchievementType
+                            from app.services import achievements
+                            await achievements.grant_achievement(
+                                db, sender_pet.user_id, AchievementType.FIRST_MESSAGE
+                            )
+                        
                         # Auto mark as read for sender
                         participant.last_read_message_id = new_message.id
                         participant.last_read_at = new_message.created_at

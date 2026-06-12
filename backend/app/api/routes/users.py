@@ -200,11 +200,46 @@ async def update_my_profile(
 ):
     """Update the authenticated user's profile."""
     updates = body.model_dump(exclude_unset=True)
+    
+    # Track which achievements to grant
+    from app.models.user_achievement import AchievementType
+    from app.services import achievements
+    
+    grant_achievements = []
+    
+    # Check if full_name was just added
+    if 'full_name' in updates and updates['full_name'] and not user.full_name:
+        grant_achievements.append(AchievementType.FULL_NAME)
+    
     for field, value in updates.items():
         setattr(user, field, value)
 
     await db.commit()
     await db.refresh(user)
+    
+    # Grant achievements
+    for achievement_type in grant_achievements:
+        await achievements.grant_achievement(db, user.id, achievement_type)
+    
+    # Check if profile is now complete and grant achievement
+    has_all_fields = all([
+        user.full_name,
+        user.occupation,
+        user.bio,
+        user.profile_photo_url,
+    ])
+    
+    # Check if user has at least one active pet
+    pets_result = await db.execute(
+        select(PetProfile).where(
+            PetProfile.user_id == user.id,
+            PetProfile.is_active.is_(True),
+        )
+    )
+    has_active_pet = pets_result.scalar_one_or_none() is not None
+    
+    if has_all_fields and has_active_pet:
+        await achievements.grant_achievement(db, user.id, AchievementType.PROFILE_COMPLETE)
 
     return UserFullProfile.model_validate(user)
 
@@ -301,6 +336,9 @@ async def confirm_profile_photo_upload(
             detail=f"Image exceeds {r2.MAX_PHOTO_BYTES // (1024 * 1024)} MB limit",
         )
 
+    # Track if this is first photo
+    is_first_photo = not user.profile_photo_url
+
     # Delete old photo if exists
     if user.profile_photo_url:
         old_key = user.profile_photo_url.replace(settings.r2_public_base_url.rstrip('/') + '/', '')
@@ -311,6 +349,12 @@ async def confirm_profile_photo_upload(
     user.profile_photo_url = r2.public_url(body.object_key)
     await db.commit()
     await db.refresh(user)
+
+    # Grant achievement for first photo upload
+    if is_first_photo:
+        from app.models.user_achievement import AchievementType
+        from app.services import achievements
+        await achievements.grant_achievement(db, user.id, AchievementType.PROFILE_PHOTO)
 
     return UserFullProfile.model_validate(user)
 

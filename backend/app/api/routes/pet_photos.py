@@ -151,6 +151,12 @@ async def confirm_photo_upload(
     await db.commit()
     await db.refresh(photo)
 
+    # Grant achievement for first pet photo
+    if is_first_photo:
+        from app.models.user_achievement import AchievementType
+        from app.services import achievements
+        await achievements.grant_achievement(db, pet.user_id, AchievementType.PET_PHOTO)
+
     return photo
 
 

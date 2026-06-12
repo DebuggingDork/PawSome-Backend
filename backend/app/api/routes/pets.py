@@ -112,6 +112,11 @@ async def create_pet(
     await db.commit()
     await db.refresh(pet)
 
+    # Grant achievement for first pet created
+    from app.models.user_achievement import AchievementType
+    from app.services import achievements
+    await achievements.grant_achievement(db, user.id, AchievementType.PET_CREATED)
+
     return pet
 
 
