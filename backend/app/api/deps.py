@@ -1,3 +1,4 @@
+from app.models.pet_profile import PetProfile
 from app.models.user import User
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -48,3 +49,33 @@ async def get_current_user(
         )
 
     return user
+
+
+async def require_active_pet(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PetProfile:
+    """Gate for actions that require a registered pet (swipe, chat, etc.).
+
+    Users without a pet can still browse, but routes using this dependency
+    return 403 PET_PROFILE_REQUIRED so the frontend can prompt them to
+    register a pet first.
+    """
+    result = await db.execute(
+        select(PetProfile)
+        .where(
+            PetProfile.user_id == user.id,
+            PetProfile.is_active.is_(True),
+        )
+        .order_by(PetProfile.created_at)
+        .limit(1)
+    )
+    pet = result.scalar_one_or_none()
+
+    if pet is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="PET_PROFILE_REQUIRED",
+        )
+
+    return pet
