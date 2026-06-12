@@ -1,7 +1,7 @@
 """create pet_photos
 
 Revision ID: b5e938cdcb09
-Revises: e49968edd5ac
+Revises: 
 Create Date: 2026-06-12 23:43:48.924831
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'b5e938cdcb09'
-down_revision: Union[str, Sequence[str], None] = 'e49968edd5ac'
+down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

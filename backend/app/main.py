@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 from app.core.config import settings
-from app.api.routes import auth, pet_photos, pets
+from app.api.routes import auth, matches, pet_photos, pets
 
 from app.core.cors import setup_cors
 
@@ -12,6 +12,7 @@ setup_cors(app)
 app.include_router(auth.router)
 app.include_router(pets.router)
 app.include_router(pet_photos.router)
+app.include_router(matches.router)
 
 @app.get("/")
 def root():
