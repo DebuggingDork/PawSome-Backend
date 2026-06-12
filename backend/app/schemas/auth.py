@@ -69,6 +69,20 @@ class UserFullProfile(UserPrivateProfile):
     }
 
 
+class UserPhotoPresignRequest(BaseModel):
+    content_type: Literal["image/jpeg", "image/png", "image/webp"]
+
+
+class UserPhotoPresignResponse(BaseModel):
+    upload_url: str = Field(description="PUT the file here with the same Content-Type")
+    object_key: str = Field(description="Pass back to the confirm endpoint after upload")
+    expires_in: int = Field(description="Seconds until the upload URL expires")
+
+
+class UserPhotoConfirmRequest(BaseModel):
+    object_key: str = Field(min_length=1, max_length=512)
+
+
 class ProfileCompletionStatus(BaseModel):
     """Profile completion tracking for gamified onboarding"""
     completion_percentage: int = Field(ge=0, le=100, description="Overall profile completion (0-100)")
