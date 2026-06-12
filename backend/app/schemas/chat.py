@@ -19,6 +19,7 @@ class MessageResponse(BaseModel):
     content: str
     msg_type: str
     created_at: datetime
+    is_read: bool = False  # Calculated field
     
     model_config = {
         "from_attributes": True,
@@ -30,9 +31,23 @@ class ChatHistoryResponse(BaseModel):
     messages: list[MessageResponse]
     total: int
     has_more: bool
+    unread_count: int = 0
 
 
 class WSMessage(BaseModel):
     """WebSocket message envelope"""
     type: str  # "message", "typing", "read", "error"
     data: dict
+
+
+class MarkReadRequest(BaseModel):
+    """Mark messages as read up to a specific message"""
+    message_id: UUID
+
+
+class ReadReceiptResponse(BaseModel):
+    """Read receipt info for a match"""
+    match_id: UUID
+    your_last_read: UUID | None
+    other_last_read: UUID | None
+    unread_count: int
