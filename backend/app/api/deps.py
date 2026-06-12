@@ -1,3 +1,5 @@
+import uuid
+
 from app.models.pet_profile import PetProfile
 from app.models.user import User
 from fastapi import Depends, HTTPException, status
@@ -68,6 +70,36 @@ async def get_current_user_optional(
 
     result = await db.execute(select(User).where(User.id == user_id))
     return result.scalar_one_or_none()
+
+
+async def get_owned_pet(
+    pet_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PetProfile:
+    """Resolve the {pet_id} path param to an active pet owned by the caller.
+    404 if missing/inactive, 403 if owned by someone else."""
+    result = await db.execute(
+        select(PetProfile).where(
+            PetProfile.id == pet_id,
+            PetProfile.is_active.is_(True),
+        )
+    )
+    pet = result.scalar_one_or_none()
+
+    if pet is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pet not found",
+        )
+
+    if pet.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not own this pet",
+        )
+
+    return pet
 
 
 async def require_active_pet(

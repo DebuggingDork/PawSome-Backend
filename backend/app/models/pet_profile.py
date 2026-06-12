@@ -11,6 +11,7 @@ from app.core.database import Base
 
 
 if TYPE_CHECKING:
+    from app.models.pet_photo import PetPhoto
     from app.models.user import User
 
 
@@ -56,3 +57,19 @@ class PetProfile(Base):
         nullable=False,
     )
     user: Mapped["User"] = relationship(back_populates="pet_profiles")
+
+    # lazy="selectin": photos are always eagerly loaded (max 5 per pet), so
+    # response schemas can safely access them in async context anywhere.
+    photos: Mapped[list["PetPhoto"]] = relationship(
+        back_populates="pet",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="PetPhoto.sort_order",
+    )
+
+    @property
+    def primary_photo_url(self) -> str | None:
+        primary = next((p for p in self.photos if p.is_primary), None)
+        if primary is not None:
+            return primary.url
+        return self.photos[0].url if self.photos else None

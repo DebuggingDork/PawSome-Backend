@@ -29,6 +29,17 @@ class PetUpdate(BaseModel):
     lng: float | None = Field(default=None, ge=-180, le=180)
 
 
+class PetPhotoResponse(BaseModel):
+    id: UUID
+    url: str
+    is_primary: bool
+    sort_order: int
+
+    model_config = {
+        "from_attributes": True,
+    }
+
+
 class PetPublicResponse(BaseModel):
     """What other users see when browsing — never exposes exact coordinates."""
 
@@ -41,6 +52,8 @@ class PetPublicResponse(BaseModel):
     bio: str | None
     is_active: bool
     created_at: datetime
+    primary_photo_url: str | None
+    photos: list[PetPhotoResponse]
 
     model_config = {
         "from_attributes": True,
@@ -54,3 +67,26 @@ class PetResponse(PetPublicResponse):
     lat: float
     lng: float
     updated_at: datetime
+
+
+class PetListResponse(BaseModel):
+    """Paginated envelope for the public catalog."""
+
+    items: list[PetPublicResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class PhotoPresignRequest(BaseModel):
+    content_type: Literal["image/jpeg", "image/png", "image/webp"]
+
+
+class PhotoPresignResponse(BaseModel):
+    upload_url: str = Field(description="PUT the file here with the same Content-Type")
+    object_key: str = Field(description="Pass back to the confirm endpoint after upload")
+    expires_in: int = Field(description="Seconds until the upload URL expires")
+
+
+class PhotoConfirmRequest(BaseModel):
+    object_key: str = Field(min_length=1, max_length=512)
