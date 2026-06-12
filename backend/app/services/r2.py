@@ -44,6 +44,12 @@ def build_object_key(pet_id: uuid.UUID, content_type: str) -> str:
     return f"pets/{pet_id}/{uuid.uuid4().hex}.{ext}"
 
 
+def build_user_photo_key(user_id: uuid.UUID, content_type: str) -> str:
+    """Build object key for user profile photo"""
+    ext = ALLOWED_CONTENT_TYPES[content_type]
+    return f"users/{user_id}/profile.{ext}"
+
+
 def public_url(object_key: str) -> str:
     return f"{settings.r2_public_base_url.rstrip('/')}/{object_key}"
 
