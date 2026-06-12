@@ -11,8 +11,8 @@
 > codebase, then check Section 9 for what comes next. **Update Section 8 after every
 > completed feature** so this file always reflects reality.
 
-**Last updated:** 2026-06-12
-**Current phase:** Phase 3 — Pet Profiles API (CRUD done) → Next: pet photos (S3) / Google OAuth / Phase 4 swipe
+**Last updated:** 2026-06-13
+**Current phase:** Phase 4 — Swipe, Match & Notifications (DONE ✅) → Next: WebSocket Chat / Explore Feed
 
 ---
 
@@ -175,19 +175,59 @@ Max **5 photos per pet** (enforced in routes). Relationship `PetProfile.photos` 
 property surfaces the card image. Storage is **Cloudflare R2** (S3-compatible, boto3),
 not AWS S3 — decision changed for free egress.
 
-### 4.2 Planned Tables ⬜ (not yet created)
+### 4.2 Implemented Tables — Phase 4 ✅
+
+#### `swipes` (`backend/app/models/swipe.py`)
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | UUID | PK |
+| `swiper_pet_id` | UUID | FK → `pet_profiles.id` ON DELETE CASCADE, indexed |
+| `target_pet_id` | UUID | FK → `pet_profiles.id` ON DELETE CASCADE, indexed |
+| `action` | Enum `swipe_action` (LIKE/SKIP) | NOT NULL |
+| `created_at` | DateTime(tz) | server default `now()` |
+
+**Unique constraint**: (swiper_pet_id, target_pet_id) — prevents duplicate swipes.
+**Index**: `ix_swipes_target_action` (target_pet_id, action) for mutual match detection.
+
+#### `matches` (`backend/app/models/match.py`)
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | UUID | PK |
+| `pet1_id` | UUID | FK → `pet_profiles.id` ON DELETE CASCADE (smaller UUID) |
+| `pet2_id` | UUID | FK → `pet_profiles.id` ON DELETE CASCADE (larger UUID) |
+| `created_at` | DateTime(tz) | server default `now()` |
+
+**Unique constraint**: (pet1_id, pet2_id) — prevents duplicate matches.
+Created automatically when two pets mutually like each other.
+
+#### `notifications` (`backend/app/models/notification.py`)
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | UUID | PK |
+| `user_id` | UUID | FK → `users.id` ON DELETE CASCADE, indexed |
+| `notification_type` | Enum `notification_type` (NEW_MATCH/NEW_LIKE) | NOT NULL |
+| `pet_id` | UUID | FK → `pet_profiles.id` (your pet) |
+| `related_pet_id` | UUID | FK → `pet_profiles.id` (other pet) |
+| `match_id` | UUID | FK → `matches.id` (nullable, for NEW_MATCH) |
+| `message` | Text | Human-readable notification message |
+| `is_read` | Boolean | default `False` |
+| `created_at` | DateTime(tz) | server default `now()` |
+| `read_at` | DateTime(tz) | nullable (set when marked read) |
+
+### 4.3 Planned Tables ⬜ (not yet created)
 
 | Table | Key Columns | Notes |
 |---|---|---|
-| `swipes` | id, swiper_pet_id, swiped_pet_id, direction (like/pass/super_woof), created_at | Unique constraint on both IDs |
-| `matches` | id, pet1_id, pet2_id, matched_at, is_active | Created on mutual like |
 | `messages` | id, match_id, sender_pet_id, content, msg_type, read_at, created_at | Soft delete |
 | `pet_interests` | id, pet_id, interest (fetch/swim/hike etc.) | Tags for matching |
 | `blocks` | id, blocker_id, blocked_id | Prevents showing in feed |
 | `reports` | id, reporter_id, reported_id, reason, resolved | Moderation |
 | `subscriptions` | id, user_id, plan, status, stripe_customer_id, expires_at | Premium tier |
 
-### 4.3 PostGIS Geo Query (target, once PostGIS is enabled)
+### 4.4 PostGIS Geo Query (target, once PostGIS is enabled)
 
 ```sql
 SELECT pp.* FROM pet_profiles pp
@@ -222,8 +262,12 @@ ORDER BY ST_Distance(pp.location, ST_Point(:lng,:lat)) LIMIT 20
 | ✅ | `DELETE /pets/{id}/photos/{photo_id}` | Delete photo (R2 + DB, promotes next primary) | Owner |
 | ⬜ | `GET /explore` | Swiping feed (geo-filtered) | Required |
 | ⬜ | `GET /explore/map` | Nearby pets map data | Required |
-| ⬜ | `POST /swipe` | Like / Pass / Super-Woof | Required |
-| ⬜ | `GET /matches` | List all matches | Required |
+| ✅ | `POST /matches/swipe` | Like / Skip (validates species, creates match if mutual) | Required |
+| ✅ | `GET /matches/my-matches` | List all matches for user's pets | Required |
+| ✅ | `GET /matches/likes-received` | See who liked your pet (pending matches) | Required |
+| ✅ | `GET /matches/notifications` | Get match/like notifications with pet details | Required |
+| ✅ | `PATCH /matches/notifications/read` | Mark notifications as read | Required |
+| ✅ | `GET /matches/swipe-history` | View your pet's swipe history (likes/skips) | Required |
 | ⬜ | `GET /matches/{id}/messages` | Message history | Required |
 | ⬜ | `WS /ws/chat/{match_id}` | Real-time chat | JWT in header |
 | ⬜ | `POST /pets/{id}/report` | Report a profile | Required |
@@ -376,6 +420,9 @@ PawSome/
 | 20 | **Cloudflare R2 storage service** | `app/services/r2.py`, `app/core/config.py` | boto3 S3 client pointed at `https://{account}.r2.cloudflarestorage.com`. Presigned PUT (10-min expiry, content type pinned to jpeg/png/webp), head (size check, 10 MB max), delete, public URL builder. R2 env vars optional — photo endpoints return **503** until configured. Blocking boto3 calls wrapped in `run_in_threadpool`. |
 | 21 | **Photo upload routes** | `app/api/routes/pet_photos.py` | Presign → client PUTs directly to R2 → confirm (verifies object exists, key ownership `pets/{pet_id}/` prefix, size, 5-photo cap; first photo auto-primary). Set-primary + delete (R2 object removed, next photo promoted if primary deleted). All owner-only via shared `get_owned_pet` dependency (moved to `app/api/deps.py`). |
 | 22 | **Paginated browse** | `app/api/routes/pets.py` | `GET /pets` now returns `{items, total, limit, offset}`; items include `primary_photo_url` + `photos`. |
+| 23 | **Swipe, Match & Notification models** | `app/models/swipe.py`, `app/models/match.py`, `app/models/notification.py` | Three new models for matching system. Swipe records every like/skip with species validation. Match created on mutual like. Notifications sent to both users on match. Migration `08edcca036c1` creates all three tables with proper indexes and constraints. |
+| 24 | **Matching API routes** | `app/api/routes/matches.py` | `POST /matches/swipe` (validates species match, detects mutual likes, creates match + notifications), `GET /matches/my-matches` (list user's matches), `GET /matches/likes-received` (see who liked your pet), `GET /matches/notifications` (get notifications with pet details), `PATCH /matches/notifications/read` (mark as read), `GET /matches/swipe-history` (view your swipe history). All routes enforce species matching (dog-to-dog only, etc.). Router registered in `main.py`. |
+| 25 | **Match schemas** | `app/schemas/match.py` | Request/response schemas for swipe actions, matches, and notifications. Includes detailed notification responses with pet info for UI display. |
 
 ### 8.3 How to run the backend (current)
 
@@ -418,11 +465,16 @@ uv run fastapi dev           # start dev server → http://localhost:8000/docs
 - [x] `pet_photos` model + migration; **Cloudflare R2** presigned upload service (`app/services/r2.py`) + photo routes (presign/confirm/set-primary/delete, max 5)
 - [ ] Fill in R2 env vars (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_BASE_URL`) — photo endpoints 503 until then
 
-### Phase 4 — Swipe, Match & Explore
-- [ ] `swipes` + `matches` models + migrations (unique constraint on swiper/swiped pair)
-- [ ] `POST /swipe` with mutual-match detection
+### Phase 4 — Swipe, Match & Explore (Matching done ✅, Explore feed pending)
+- [x] `swipes` + `matches` + `notifications` models + migration `08edcca036c1`
+- [x] `POST /matches/swipe` with mutual-match detection + species validation (inter-species only)
+- [x] `GET /matches/my-matches` — list all matches for user's pets
+- [x] `GET /matches/likes-received` — see who liked your pet (potential matches)
+- [x] `GET /matches/notifications` — get match notifications with pet details
+- [x] `PATCH /matches/notifications/read` — mark notifications as read
+- [x] `GET /matches/swipe-history` — view swipe history (likes/skips with pet details)
+- [x] Notification system: both users get notified on match with message and pet info
 - [ ] `GET /explore` geo-filtered feed (start with lat/lng haversine; upgrade to PostGIS)
-- [ ] `GET /matches`
 - [ ] Enable PostGIS on Neon + migrate `lat`/`lng` → geography `location` column
 
 ### Phase 5 — Real-time Chat
@@ -514,9 +566,9 @@ backend/app/
 ├── main.py                ✅ (CORS + auth/pets routers registered)
 ├── api/routes/
 │   ├── auth.py            ✅ JWT done (Google OAuth ⬜)
-│   ├── pets.py            ✅ Profile CRUD (photos ⬜)
-│   ├── swipe.py           ⬜ Like/Pass + match detection
-│   ├── matches.py         ⬜ Match list + details
+│   ├── pets.py            ✅ Profile CRUD + photos ✅
+│   ├── pet_photos.py      ✅ R2 presign/confirm/set-primary/delete
+│   ├── matches.py         ✅ Swipe + match detection + notifications
 │   ├── chat.py            ⬜ WS endpoint + history
 │   ├── explore.py         ⬜ Geo-filtered feed
 │   ├── ai.py              ⬜ Bio generation
@@ -524,13 +576,18 @@ backend/app/
 ├── models/
 │   ├── user.py            ✅
 │   ├── pet_profile.py     ✅
-│   └── (swipe, match, message, pet_photo, ...) ⬜
+│   ├── pet_photo.py       ✅
+│   ├── swipe.py           ✅
+│   ├── match.py           ✅
+│   ├── notification.py    ✅
+│   └── (message, pet_interest, block, report, ...) ⬜
 ├── schemas/
 │   ├── auth.py            ✅
 │   ├── pet.py             ✅
-│   └── (swipe, match, chat, ...) ⬜
+│   ├── match.py           ✅
+│   └── (chat, explore, ...) ⬜
 ├── services/
-│   ├── s3.py              ⬜ Presigned URL generation
+│   ├── r2.py              ✅ Cloudflare R2 presigned URLs + delete
 │   ├── notifications.py   ⬜ FCM + Resend
 │   ├── matching.py        ⬜ Compatibility score logic
 │   └── ai_bio.py          ⬜ OpenAI integration
