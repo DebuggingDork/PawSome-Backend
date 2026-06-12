@@ -1,3 +1,4 @@
+from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -18,7 +19,7 @@ class TokenResponse(BaseModel):
     token_type : str = Field(description="Token type")
 
 class UserResponse(BaseModel):
-    id:str
+    id: UUID
     email:EmailStr
     is_verified:bool
 
