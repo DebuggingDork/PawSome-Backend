@@ -6,8 +6,59 @@
 ```
 Authorization: Bearer <access_token>
 ```
+# use this fuckin .env for running backend server
 
----
+```env
+# ============================================================
+# Database Configuration
+# ============================================================
+
+DATABASE_URL=postgresql://neondb_owner:npg_xgY3G4KPJpud@ep-delicate-cloud-aoffo7k7-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+
+# ============================================================
+# Redis Configuration
+# ============================================================
+
+REDIS_URL=rediss://default:gQAAAAAAAimgAAIgcDIyMDhiZWNlOWE4YjA0MWI2YTRkZjRlNTllMDJlZGM5Yg@vital-jennet-141728.upstash.io:6379
+
+# ============================================================
+# JWT Authentication
+# ============================================================
+
+JWT_SECRET=0cf737d9da1194cfc3fc733bb3cbc8ba72b445ab4bac924a7d8d0d13138ded962a9e595e364461e139b41c1fd0f76992845e91c72a8dc8a769bfb9c80d7c9836
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# ============================================================
+# Frontend Configuration
+# ============================================================
+
+FRONTEND_URL=http://localhost:5173
+
+# ============================================================
+# Application Configuration
+# ============================================================
+
+APP_ENV=development
+
+# ============================================================
+# CORS Configuration
+# ============================================================
+
+CORS_ORIGINS=http://localhost:5173
+
+# ============================================================
+# Cloudflare R2 (Photo Storage)
+# ============================================================
+
+R2_ACCOUNT_ID=587b29c736a0ef36b92b0d4266fff410
+R2_ACCESS_KEY_ID=321cb85c59fbe8312c1b9efbcbcf0bfa
+R2_SECRET_ACCESS_KEY=c7d9010b72bb8539da5a83d2faafbc68057e892452164886f77366f4a8d31263
+
+R2_BUCKET_NAME=pawsome-photos-dev
+R2_PUBLIC_BASE_URL=https://pub-2241f255146e4b8ab3347e935732ec62.r2.dev
+```
 
 ## Table of Contents
 
@@ -125,7 +176,7 @@ Revoke refresh token.
 
 **GET** `/auth/me`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Get basic info about authenticated user.
 
@@ -199,7 +250,7 @@ Request new verification email.
 
 **GET** `/users/me`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Get complete profile of authenticated user including private fields.
 
@@ -223,7 +274,7 @@ Get complete profile of authenticated user including private fields.
 
 **PATCH** `/users/me`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Update user profile fields. All fields are optional.
 
@@ -257,7 +308,7 @@ Update user profile fields. All fields are optional.
 
 **GET** `/users/me/completion`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Get gamified profile completion progress.
 
@@ -325,7 +376,7 @@ Get another user's profile. Privacy levels:
 
 **POST** `/users/me/photo/presign`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Step 1: Get presigned URL for direct upload to R2.
 
@@ -357,7 +408,7 @@ Step 1: Get presigned URL for direct upload to R2.
 
 **POST** `/users/me/photo`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Step 2: Confirm upload after PUTting file to presigned URL.
 
@@ -390,7 +441,7 @@ Step 2: Confirm upload after PUTting file to presigned URL.
 
 **DELETE** `/users/me/photo`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Remove profile photo.
 
@@ -404,7 +455,7 @@ Remove profile photo.
 
 **GET** `/onboarding/status`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Get step-by-step onboarding wizard progress.
 
@@ -483,7 +534,7 @@ Get step-by-step onboarding wizard progress.
 
 **POST** `/onboarding/skip-optional`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Mark optional onboarding steps as skipped.
 
@@ -503,7 +554,7 @@ Mark optional onboarding steps as skipped.
 
 **GET** `/achievements/me`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Get all achievement badges and progress.
 
@@ -670,7 +721,7 @@ Public endpoint - no authentication required. Browse all active pets with option
 
 **POST** `/pets`
 
-🔒 **Requires Authentication**
+**Requires Authentication**
 
 Create a new pet profile. Maximum 5 pets per user.
 
@@ -717,7 +768,7 @@ Create a new pet profile. Maximum 5 pets per user.
 
 **GET** `/pets/me`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 List all active pets owned by current user.
 
@@ -777,7 +828,7 @@ Get pet details. Owner sees full data, others see public view with owner info.
 
 **PATCH** `/pets/{pet_id}`
 
-🔒 **Requires Authentication** (must be owner)
+ **Requires Authentication** (must be owner)
 
 Update pet profile. All fields are optional.
 
@@ -813,7 +864,7 @@ Update pet profile. All fields are optional.
 
 **DELETE** `/pets/{pet_id}`
 
-🔒 **Requires Authentication** (must be owner)
+ **Requires Authentication** (must be owner)
 
 Deactivate pet profile (soft delete).
 
@@ -832,7 +883,7 @@ All photo endpoints use two-step upload process:
 
 **POST** `/pets/{pet_id}/photos/presign`
 
-🔒 **Requires Authentication** (must be owner)
+ **Requires Authentication** (must be owner)
 
 Step 1: Get presigned URL for uploading pet photo. Maximum 5 photos per pet.
 
@@ -864,7 +915,7 @@ Step 1: Get presigned URL for uploading pet photo. Maximum 5 photos per pet.
 
 **POST** `/pets/{pet_id}/photos`
 
-🔒 **Requires Authentication** (must be owner)
+ **Requires Authentication** (must be owner)
 
 Step 2: Confirm photo upload after PUTting file to presigned URL.
 
@@ -898,7 +949,7 @@ Step 2: Confirm photo upload after PUTting file to presigned URL.
 
 **PATCH** `/pets/{pet_id}/photos/{photo_id}/primary`
 
-🔒 **Requires Authentication** (must be owner)
+ **Requires Authentication** (must be owner)
 
 Make a photo the primary (card image in browse catalog).
 
@@ -920,7 +971,7 @@ Make a photo the primary (card image in browse catalog).
 
 **DELETE** `/pets/{pet_id}/photos/{photo_id}`
 
-🔒 **Requires Authentication** (must be owner)
+ **Requires Authentication** (must be owner)
 
 Delete a pet photo. Cannot delete the last photo.
 
@@ -938,7 +989,7 @@ Delete a pet photo. Cannot delete the last photo.
 
 **POST** `/matches/swipe`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Swipe right (like) or left (skip) on another pet.
 
@@ -982,7 +1033,7 @@ Swipe right (like) or left (skip) on another pet.
 
 **GET** `/matches/my-matches`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Get all matches for current user's pets.
 
@@ -1013,7 +1064,7 @@ Get all matches for current user's pets.
 
 **GET** `/matches/notifications`
 
-🔒 **Requires Authentication**
+**Requires Authentication**
 
 Get all notifications for current user.
 
@@ -1060,7 +1111,7 @@ Get all notifications for current user.
 
 **POST** `/matches/likes/{notification_id}/accept`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Accept a like notification and create a match.
 
@@ -1089,7 +1140,7 @@ Accept a like notification and create a match.
 
 **POST** `/matches/likes/{notification_id}/reject`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Reject a like notification.
 
@@ -1110,7 +1161,7 @@ Reject a like notification.
 
 **POST** `/matches/notifications/mark-read`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Mark one or multiple notifications as read.
 
@@ -1139,7 +1190,7 @@ Mark one or multiple notifications as read.
 
 **WS** `/chat/ws/{match_id}?pet_id={pet_id}&token={access_token}`
 
-🔒 **Requires Authentication** (via query param)
+ **Requires Authentication** (via query param)
 
 Real-time chat with WebSocket connection.
 
@@ -1207,7 +1258,7 @@ ws://localhost:8000/api/v1/chat/ws/990e8400-e29b-41d4-a716-446655440000?pet_id=7
 
 **GET** `/chat/matches/{match_id}`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Get match details including both pets and owners.
 
@@ -1255,7 +1306,7 @@ Get match details including both pets and owners.
 
 **GET** `/chat/matches/{match_id}/messages`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Get message history for a match.
 
@@ -1294,7 +1345,7 @@ Get message history for a match.
 
 **GET** `/chat/active-chats`
 
-🔒 **Requires Authentication**
+ **Requires Authentication**
 
 Get all active chat conversations for current user's pets.
 
@@ -1339,7 +1390,7 @@ Get all active chat conversations for current user's pets.
 
 **POST** `/chat/matches/{match_id}/read`
 
-🔒 **Requires Authentication**
+**Requires Authentication**
 
 Mark all messages up to a specific message as read (alternative to WebSocket).
 
@@ -1749,14 +1800,14 @@ const WS_BASE_URL = 'wss://api.pawsome.com/api/v1';
 | Type | Name | Description | Icon | How to Earn |
 |------|------|-------------|------|-------------|
 | `profile_photo` | Picture Perfect | Upload your profile photo | 📸 | Upload first profile photo |
-| `full_name` | First Steps | Add your name to profile | 👤 | Add full_name field |
-| `pet_created` | Pet Parent | Create first pet profile | 🐕 | Create first pet |
-| `pet_photo` | Show & Tell | Upload pet's first photo | 📷 | Upload first pet photo |
-| `first_match` | Match Maker | Get your first match | 💝 | Accept a like (first match) |
-| `five_matches` | Popular Paw | Achieve 5 matches | ⭐ | Reach 5 total matches |
-| `first_message` | Breaking the Ice | Send first message | 💬 | Send first chat message |
-| `profile_complete` | All Set | Complete profile 100% | ✨ | Fill all profile fields + active pet |
-| `verified_email` | Verified | Verify email address | ✅ | Complete email verification |
+| `full_name` | First Steps | Add your name to profile |  | Add full_name field |
+| `pet_created` | Pet Parent | Create first pet profile |  | Create first pet |
+| `pet_photo` | Show & Tell | Upload pet's first photo |  | Upload first pet photo |
+| `first_match` | Match Maker | Get your first match |  | Accept a like (first match) |
+| `five_matches` | Popular Paw | Achieve 5 matches | | Reach 5 total matches |
+| `first_message` | Breaking the Ice | Send first message |  | Send first chat message |
+| `profile_complete` | All Set | Complete profile 100% |  | Fill all profile fields + active pet |
+| `verified_email` | Verified | Verify email address |  | Complete email verification |
 
 ---
 
@@ -2020,11 +2071,11 @@ curl -X GET "http://localhost:8000/api/v1/pets?species=dog&limit=10"
 
 ## Support & Contact
 
-For API questions or bug reports, contact the backend team.
+For API questions or bug reports, contact the 6300868001 :) .
 
 **API Documentation:** `http://localhost:8000/docs` (Swagger UI)  
 **API Version:** v1  
-**Last Updated:** January 2024
+**Last Updated:** 13 June 2026
 
 ---
 
