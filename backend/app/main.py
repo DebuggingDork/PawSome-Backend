@@ -2,8 +2,11 @@ from fastapi import FastAPI
 
 from app.core.config import settings
 
+from app.core.cors import setup_cors
+
 app = FastAPI(title="PawSome API", description="DOG MATCHING AND CHATTING APP")
 
+setup_cors(app)
 
 @app.get("/")
 def root():
