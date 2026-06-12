@@ -1,9 +1,9 @@
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import desc
+
 
 class RegisterRequest(BaseModel):
     email : EmailStr
-    password : str = Field(min_length=8,max_length=8,description="Password must be at least 8 characters long")
+    password : str = Field(min_length=8, max_length=128, description="Password must be at least 8 characters long")
 
 class LoginRequest(BaseModel):
     email : EmailStr
