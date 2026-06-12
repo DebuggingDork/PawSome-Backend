@@ -72,6 +72,8 @@ async def create_pet(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Create a new pet profile. Note: Pet will be created but should have at least
+    one photo uploaded via the photo endpoints before being shown in browse."""
     count_result = await db.execute(
         select(func.count())
         .select_from(PetProfile)
@@ -88,6 +90,7 @@ async def create_pet(
 
     pet = PetProfile(
         user_id=user.id,
+        is_active=False,  # Start as inactive, will be activated after first photo
         **body.model_dump(),
     )
     db.add(pet)
