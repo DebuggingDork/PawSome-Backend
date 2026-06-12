@@ -67,3 +67,28 @@ class UserFullProfile(UserPrivateProfile):
     model_config = {
         "from_attributes": True,
     }
+
+
+class ProfileCompletionStatus(BaseModel):
+    """Profile completion tracking for gamified onboarding"""
+    completion_percentage: int = Field(ge=0, le=100, description="Overall profile completion (0-100)")
+    is_complete: bool = Field(description="True if all required fields are filled")
+    completed_fields: list[str] = Field(description="List of completed field names")
+    missing_fields: list[str] = Field(description="List of missing field names")
+    suggestions: list[str] = Field(description="Friendly suggestions for next steps")
+    
+    # Breakdown by category
+    profile_fields_complete: int = Field(ge=0, le=100, description="Profile fields completion (0-100)")
+    pet_profile_complete: int = Field(ge=0, le=100, description="Pet profile completion (0-100)")
+    
+    # Counts
+    total_pets: int = Field(description="Number of pets created")
+    active_pets: int = Field(description="Number of active pets (with photos)")
+    
+    # Milestones
+    has_profile_photo: bool
+    has_basic_info: bool
+    has_bio: bool
+    has_address: bool
+    has_at_least_one_pet: bool
+    has_active_pet: bool

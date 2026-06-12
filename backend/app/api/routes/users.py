@@ -14,6 +14,7 @@ from app.schemas.auth import (
     UserPrivateProfile,
     UserProfileUpdate,
     UserPublicProfile,
+    ProfileCompletionStatus,
 )
 
 router = APIRouter(
@@ -53,6 +54,130 @@ async def _check_if_matched(db: AsyncSession, current_user_id: uuid.UUID, target
                 return True
 
     return False
+
+
+@router.get("/me/completion", response_model=ProfileCompletionStatus)
+async def get_profile_completion(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get profile completion status with gamified progress tracking.
+    Helps guide users through onboarding and encourages complete profiles."""
+    
+    # Check profile fields
+    has_profile_photo = user.profile_photo_url is not None and user.profile_photo_url.strip() != ""
+    has_full_name = user.full_name is not None and user.full_name.strip() != ""
+    has_occupation = user.occupation is not None and user.occupation.strip() != ""
+    has_bio = user.bio is not None and user.bio.strip() != ""
+    has_address = user.address is not None and user.address.strip() != ""
+    
+    # Count completed profile fields
+    profile_fields = [has_profile_photo, has_full_name, has_occupation, has_bio, has_address]
+    profile_completed = sum(profile_fields)
+    profile_fields_percentage = (profile_completed / len(profile_fields)) * 100
+    
+    # Check pets
+    pets_result = await db.execute(
+        select(PetProfile).where(PetProfile.user_id == user.id)
+    )
+    pets = pets_result.scalars().all()
+    total_pets = len(pets)
+    active_pets = sum(1 for p in pets if p.is_active)
+    
+    has_at_least_one_pet = total_pets > 0
+    has_active_pet = active_pets > 0
+    
+    # Pet profile completion (50% for creating, 50% for activating with photo)
+    if total_pets == 0:
+        pet_profile_percentage = 0
+    elif not has_active_pet:
+        pet_profile_percentage = 50
+    else:
+        pet_profile_percentage = 100
+    
+    # Overall completion (60% profile, 40% pet)
+    overall_percentage = int((profile_fields_percentage * 0.6) + (pet_profile_percentage * 0.4))
+    
+    # Track completed and missing fields
+    completed_fields = []
+    missing_fields = []
+    
+    if has_profile_photo:
+        completed_fields.append("profile_photo")
+    else:
+        missing_fields.append("profile_photo")
+    
+    if has_full_name:
+        completed_fields.append("full_name")
+    else:
+        missing_fields.append("full_name")
+    
+    if has_occupation:
+        completed_fields.append("occupation")
+    else:
+        missing_fields.append("occupation")
+    
+    if has_bio:
+        completed_fields.append("bio")
+    else:
+        missing_fields.append("bio")
+    
+    if has_address:
+        completed_fields.append("address")
+    else:
+        missing_fields.append("address")
+    
+    if has_at_least_one_pet:
+        completed_fields.append("pet_created")
+    else:
+        missing_fields.append("pet_created")
+    
+    if has_active_pet:
+        completed_fields.append("pet_photo")
+    else:
+        missing_fields.append("pet_photo")
+    
+    # Generate friendly suggestions
+    suggestions = []
+    if not has_full_name:
+        suggestions.append("Add your name so pet owners know who you are")
+    if not has_profile_photo:
+        suggestions.append("Upload a profile photo to build trust")
+    if not has_occupation:
+        suggestions.append("Share your occupation to help others get to know you")
+    if not has_bio:
+        suggestions.append("Write a bio about yourself and your pet preferences")
+    if not has_at_least_one_pet:
+        suggestions.append("Create your first pet profile to start matching")
+    elif not has_active_pet:
+        suggestions.append("Upload at least one photo of your pet to activate their profile")
+    if not has_address and has_active_pet:
+        suggestions.append("Add your address (only visible to matches) for meetups")
+    
+    if not suggestions:
+        suggestions.append("🎉 Your profile is complete! Start swiping to find matches")
+    
+    # Determine if profile is "complete" (basic threshold)
+    has_basic_info = has_full_name and has_occupation
+    is_complete = has_basic_info and has_active_pet and has_profile_photo
+    
+    return ProfileCompletionStatus(
+        completion_percentage=overall_percentage,
+        is_complete=is_complete,
+        completed_fields=completed_fields,
+        missing_fields=missing_fields,
+        suggestions=suggestions,
+        profile_fields_complete=int(profile_fields_percentage),
+        pet_profile_complete=int(pet_profile_percentage),
+        total_pets=total_pets,
+        active_pets=active_pets,
+        has_profile_photo=has_profile_photo,
+        has_basic_info=has_basic_info,
+        has_bio=has_bio,
+        has_address=has_address,
+        has_at_least_one_pet=has_at_least_one_pet,
+        has_active_pet=has_active_pet,
+    )
 
 
 @router.get("/me", response_model=UserFullProfile)
