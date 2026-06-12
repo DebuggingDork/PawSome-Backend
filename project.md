@@ -12,7 +12,7 @@
 > completed feature** so this file always reflects reality.
 
 **Last updated:** 2026-06-12
-**Current phase:** Phase 1 — Backend Foundation (~80% done) → Next: Auth API routes
+**Current phase:** Phase 3 — Pet Profiles API (CRUD done) → Next: pet photos (S3) / Google OAuth / Phase 4 swipe
 
 ---
 
@@ -35,20 +35,6 @@ see-who-liked-you, profile boost, advanced filters, unlimited AI bio regeneratio
 
 All choices below are final and production-validated. No ambiguity.
 
-### 2.1 Frontend (not started yet)
-
-| Layer | Choice | Why |
-|---|---|---|
-| UI Framework | React 18 + Vite | Fastest DX, ecosystem, recruiter-ready |
-| Routing | React Router v6 | Standard, nested routes for auth flows |
-| Styling | Tailwind CSS v3 | Rapid modern UI, no CSS files |
-| State (Server) | TanStack Query v5 | Caching, background sync, no Redux |
-| State (UI) | Zustand | Lightweight, replaces Context for globals |
-| HTTP Client | Axios | Interceptors for JWT refresh |
-| Maps | Google Maps JS API | Distance, nearby pets, explore map |
-| Animations | Framer Motion | Swipe gestures, card stack |
-| Push (Web) | Firebase SDK (FCM) | Browser push notifications |
-
 ### 2.2 Backend (in progress)
 
 | Layer | Choice | Why |
@@ -70,18 +56,18 @@ All choices below are final and production-validated. No ambiguity.
 | Geo Extension | PostGIS (planned — see Section 10) | Radius search, distance queries |
 | ORM | SQLAlchemy 2.0 (async) + Alembic | Async support, clean migrations |
 | Cache / Sessions | Redis (Upstash) | Online status, chat cache, rate limits |
-| File Storage | AWS S3 + CloudFront | Industry standard, cheap, scalable |
-| Image Transform | AWS Lambda + Sharp | Auto-resize, WebP conversion on upload |
+| File Storage | **Cloudflare R2** (S3-compatible, via boto3) | Free egress (big win for image feed), S3 API |
+| Image Transform | Cloudflare Images/Workers (later) | Resize/WebP at edge when needed |
 
 ### 2.4 DevOps & Deployment (not started yet)
 
 | Layer | Choice |
 |---|---|
 | Frontend | Vercel |
-| Backend | Railway (Docker) |
+| Backend | Railway (Docker) | or render
 | Database | Neon PostgreSQL |
 | Redis | Upstash |
-| S3 Bucket | AWS S3 (us-east-1) |
+| S3 Bucket | cloudfare R2 |
 | CDN | CloudFront |
 | Containers | Docker + docker-compose |
 | CI/CD | GitHub Actions |
@@ -172,11 +158,27 @@ Relationship: `pet_profiles` → one-to-many `PetProfile` (cascade delete-orphan
 | `is_active` | Boolean | default `True` |
 | `created_at` / `updated_at` | DateTime(tz) | server defaults |
 
+#### `pet_photos` (`backend/app/models/pet_photo.py`) ✅
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | UUID | PK |
+| `pet_id` | UUID | FK → `pet_profiles.id` ON DELETE CASCADE, indexed |
+| `object_key` | String(512) | unique, NOT NULL (R2 key: `pets/{pet_id}/{uuid}.{ext}`) |
+| `url` | String(1024) | NOT NULL (public R2/CDN URL) |
+| `is_primary` | Boolean | default `False` (card image in browse) |
+| `sort_order` | Integer | default 0 |
+| `created_at` | DateTime(tz) | server default |
+
+Max **5 photos per pet** (enforced in routes). Relationship `PetProfile.photos` uses
+`lazy="selectin"` so photos are always eagerly loaded; `PetProfile.primary_photo_url`
+property surfaces the card image. Storage is **Cloudflare R2** (S3-compatible, boto3),
+not AWS S3 — decision changed for free egress.
+
 ### 4.2 Planned Tables ⬜ (not yet created)
 
 | Table | Key Columns | Notes |
 |---|---|---|
-| `pet_photos` | id, pet_id, s3_key, cdn_url, is_primary, order | Max 6 photos |
 | `swipes` | id, swiper_pet_id, swiped_pet_id, direction (like/pass/super_woof), created_at | Unique constraint on both IDs |
 | `matches` | id, pet1_id, pet2_id, matched_at, is_active | Created on mutual like |
 | `messages` | id, match_id, sender_pet_id, content, msg_type, read_at, created_at | Soft delete |
@@ -202,14 +204,22 @@ ORDER BY ST_Distance(pp.location, ST_Point(:lng,:lat)) LIMIT 20
 |---|---|---|---|
 | ✅ | `GET /` | API info + links to docs/health | Public |
 | ✅ | `GET /health` | Health check (returns status + env) | Public |
-| ⬜ | `POST /auth/register` | Create user account | Public |
-| ⬜ | `POST /auth/login` | Returns JWT pair | Public |
-| ⬜ | `POST /auth/refresh` | Refresh access token | Refresh JWT |
+| ✅ | `POST /auth/register` | Create user account | Public |
+| ✅ | `POST /auth/login` | Returns JWT pair | Public |
+| ✅ | `POST /auth/refresh` | Refresh access token (rotates: old token revoked) | Refresh JWT |
+| ✅ | `POST /auth/logout` | Revoke refresh token (Redis denylist) | Public (token in body) |
+| ✅ | `GET /auth/me` | Current user info | Required |
 | ⬜ | `GET /auth/google` | OAuth redirect | Public |
-| ⬜ | `POST /pets/` | Create pet profile | Required |
-| ⬜ | `GET /pets/{id}` | Get pet profile | Required |
-| ⬜ | `PATCH /pets/{id}` | Update profile | Owner |
-| ⬜ | `POST /pets/{id}/photos` | Upload photo (presigned S3) | Owner |
+| ✅ | `GET /pets` | Public catalog: paginated envelope `{items,total,limit,offset}` + filters (species/breed/gender); cards carry `primary_photo_url` | Public |
+| ✅ | `POST /pets` | Create pet profile (max 5/user) | Required |
+| ✅ | `GET /pets/me` | List my pets (`[]` = onboarding skipped) | Required |
+| ✅ | `GET /pets/{id}` | Pet detail page incl. all photos (owner sees coords when logged in) | Public |
+| ✅ | `PATCH /pets/{id}` | Update profile | Owner |
+| ✅ | `DELETE /pets/{id}` | Soft-delete (deactivate) profile | Owner |
+| ✅ | `POST /pets/{id}/photos/presign` | Get presigned R2 PUT URL (max 5 photos/pet) | Owner |
+| ✅ | `POST /pets/{id}/photos` | Confirm upload → saves row, 1st photo = primary | Owner |
+| ✅ | `PATCH /pets/{id}/photos/{photo_id}/primary` | Set the card/primary photo | Owner |
+| ✅ | `DELETE /pets/{id}/photos/{photo_id}` | Delete photo (R2 + DB, promotes next primary) | Owner |
 | ⬜ | `GET /explore` | Swiping feed (geo-filtered) | Required |
 | ⬜ | `GET /explore/map` | Nearby pets map data | Required |
 | ⬜ | `POST /swipe` | Like / Pass / Super-Woof | Required |
@@ -313,17 +323,29 @@ PawSome/
     │   └── versions/
     │       └── e49968edd5ac_create_users_and_pet_profiles.py
     └── app/
-        ├── main.py             ← FastAPI app, GET / and GET /health
+        ├── main.py             ← FastAPI app, CORS, auth + pets routers, GET / and /health
+        ├── api/
+        │   ├── deps.py         ← get_current_user, require_active_pet (pet gate)
+        │   └── routes/
+        │       ├── auth.py     ← register, login, refresh, logout, me
+        │       ├── pets.py     ← pet CRUD + public paginated catalog
+        │       └── pet_photos.py ← R2 presign/confirm/set-primary/delete (max 5)
         ├── core/
         │   ├── config.py       ← pydantic-settings Settings class
+        │   ├── cors.py         ← setup_cors(app) middleware helper
         │   ├── database.py     ← async engine, session factory, get_db()
-        │   └── security.py     ← bcrypt + JWT utilities
+        │   ├── redis.py        ← async Redis client (Upstash) + get_redis()
+        │   └── security.py     ← bcrypt + JWT utilities (tokens carry jti)
         ├── models/
-        │   ├── __init__.py     ← exports User, PetProfile
+        │   ├── __init__.py     ← exports User, PetProfile, PetPhoto
         │   ├── user.py         ← users table
-        │   └── pet_profile.py  ← pet_profiles table + PetSpecies enum
+        │   ├── pet_profile.py  ← pet_profiles table + PetSpecies enum
+        │   └── pet_photo.py    ← pet_photos table (R2 keys + URLs)
+        ├── services/
+        │   └── r2.py           ← Cloudflare R2: presign PUT, head, delete
         └── schemas/
-            └── auth.py         ← Pydantic auth schemas (written, NOT yet wired)
+            ├── auth.py         ← Pydantic auth schemas
+            └── pet.py          ← pet + photo + pagination schemas
 ```
 
 `frontend/` does **not exist yet**. No Docker, no CI, no tests yet.
@@ -340,8 +362,20 @@ PawSome/
 | 6 | **User model** | `app/models/user.py` | `users` table — see Section 4.1. Password nullable to support Google-OAuth-only users. |
 | 7 | **PetProfile model** | `app/models/pet_profile.py` | `pet_profiles` table with `PetSpecies` enum — see Section 4.1. Generalized from spec's dog-only design. |
 | 8 | **Alembic migrations** | `alembic/`, `alembic.ini` | Async migration setup; `env.py` imports `app.models` and uses `settings.database_url`. One applied migration `e49968edd5ac` creates `users` + `pet_profiles` with indexes. (A duplicate migration was created earlier and removed — see git history.) |
-| 9 | **Auth schemas** (uncommitted) | `app/schemas/auth.py` | `RegisterRequest`, `LoginRequest`, `RefreshRequest`, `TokenResponse`, `UserResponse` (with `from_attributes`). Written ahead of the auth routes. ⚠️ Has known bugs — see Section 10.3. |
+| 9 | **Auth schemas** | `app/schemas/auth.py` | `RegisterRequest`, `LoginRequest`, `RefreshRequest`, `TokenResponse`, `UserResponse` (with `from_attributes`). Schema bugs from Section 10.3 are fixed. |
 | 10 | **Env template** | `backend/.env.example` | `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `REFRESH_TOKEN_EXPIRE_DAYS`, `APP_ENV`, `CORS_ORIGINS`. (More vars to add as integrations land — see Section 11.) |
+| 11 | **CORS middleware** | `app/core/cors.py`, `app/main.py` | `setup_cors(app)` registers `CORSMiddleware` with `settings.cors_origins`. |
+| 12 | **Auth API routes** | `app/api/routes/auth.py` | `POST /auth/register` (409 on dup email), `POST /auth/login`, `POST /auth/refresh`, `GET /auth/me`. Router registered in `main.py`. |
+| 13 | **Auth dependency** | `app/api/deps.py` | `get_current_user`: HTTPBearer → `verify_token` (access) → loads `User` or 401. |
+| 14 | **Pet schemas** | `app/schemas/pet.py` | `PetCreate` (validated: age > 0, gender literal, lat/lng ranges), `PetUpdate` (all optional), `PetResponse` (owner view, incl. coords), `PetPublicResponse` (browse view, **no lat/lng** per Section 10.1). |
+| 15 | **Pets API routes** | `app/api/routes/pets.py` | `POST /pets` (max 5 active pets/user), `GET /pets/me` (empty list = onboarding skipped), `GET /pets/{id}` (owner gets full view, others get public view), `PATCH /pets/{id}` + `DELETE /pets/{id}` (owner-only; delete is soft → `is_active=False`). Router registered in `main.py`. |
+| 16 | **Pet gate dependency** | `app/api/deps.py` | `require_active_pet`: loads user's first active pet or raises **403 `PET_PROFILE_REQUIRED`**. Not used by pets routes; for Phase 4/5 (swipe, chat) so pet-less users can browse but get a clean error the frontend turns into a "register a pet" prompt. |
+| 17 | **Public pet catalog** | `app/api/routes/pets.py` | `GET /pets` — fully public (no auth), paginated (`limit`≤100/`offset`), filters: `species`, `gender`, `breed` (case-insensitive substring). Returns `PetPublicResponse` (no coords). `GET /pets/{id}` is also public via `get_current_user_optional` (owner logged in → full view). |
+| 18 | **Logout + token revocation** | `app/api/routes/auth.py`, `app/core/redis.py`, `app/core/security.py` | JWTs now carry a `jti` claim. `POST /auth/logout` denylists the refresh token's jti in Redis (TTL = remaining token life). `POST /auth/refresh` rejects revoked tokens **and rotates** (old refresh token revoked on use — single-use). Tokens without `jti` (pre-change) are rejected on refresh; users just re-login. |
+| 19 | **PetPhoto model + migration** | `app/models/pet_photo.py`, `alembic/versions/b5e938cdcb09_*` | `pet_photos` table (Section 4.1). Separate table (not a column on pets) so the photo limit is just a config change. Applied to Neon. |
+| 20 | **Cloudflare R2 storage service** | `app/services/r2.py`, `app/core/config.py` | boto3 S3 client pointed at `https://{account}.r2.cloudflarestorage.com`. Presigned PUT (10-min expiry, content type pinned to jpeg/png/webp), head (size check, 10 MB max), delete, public URL builder. R2 env vars optional — photo endpoints return **503** until configured. Blocking boto3 calls wrapped in `run_in_threadpool`. |
+| 21 | **Photo upload routes** | `app/api/routes/pet_photos.py` | Presign → client PUTs directly to R2 → confirm (verifies object exists, key ownership `pets/{pet_id}/` prefix, size, 5-photo cap; first photo auto-primary). Set-primary + delete (R2 object removed, next photo promoted if primary deleted). All owner-only via shared `get_owned_pet` dependency (moved to `app/api/deps.py`). |
+| 22 | **Paginated browse** | `app/api/routes/pets.py` | `GET /pets` now returns `{items, total, limit, offset}`; items include `primary_photo_url` + `photos`. |
 
 ### 8.3 How to run the backend (current)
 
@@ -365,19 +399,24 @@ uv run fastapi dev           # start dev server → http://localhost:8000/docs
 - [x] User & PetProfile models + first migration
 - [x] JWT + password security utilities
 - [x] Auth Pydantic schemas
-- [ ] Fix auth schema bugs (Section 10.3)
-- [ ] Register CORS middleware in `main.py`
+- [x] Fix auth schema bugs (Section 10.3)
+- [x] Register CORS middleware in `main.py` (`app/core/cors.py`)
 
-### Phase 2 — Auth API (NEXT UP)
-- [ ] `app/api/routes/auth.py`: `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`
-- [ ] `get_current_user` dependency (reads Bearer token → `verify_token` → loads `User` via `get_db`)
-- [ ] Register the auth router in `main.py`
+### Phase 2 — Auth API (done except Google OAuth)
+- [x] `app/api/routes/auth.py`: `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `GET /auth/me`
+- [x] `POST /auth/logout` with Redis jti denylist + refresh-token rotation
+- [x] `get_current_user` dependency (reads Bearer token → `verify_token` → loads `User` via `get_db`)
+- [x] `get_current_user_optional` dependency (public endpoints with owner-aware responses)
+- [x] Register the auth router in `main.py`
 - [ ] Google OAuth (`GET /auth/google` + callback) — needs `GOOGLE_CLIENT_ID/SECRET`
 
-### Phase 3 — Pet Profiles API
-- [ ] `app/schemas/pet.py` (create/update/response schemas)
-- [ ] `app/api/routes/pets.py`: `POST /pets/`, `GET /pets/{id}`, `PATCH /pets/{id}` (owner-only)
-- [ ] `pet_photos` model + migration; S3 presigned upload service (`app/services/s3.py`) + `POST /pets/{id}/photos`
+### Phase 3 — Pet Profiles API (CRUD done)
+- [x] `app/schemas/pet.py` (create/update/response schemas; public response hides coords)
+- [x] `app/api/routes/pets.py`: `POST /pets`, `GET /pets/me`, `GET /pets/{id}`, `PATCH /pets/{id}`, `DELETE /pets/{id}` (owner-only, soft delete)
+- [x] `GET /pets` public catalog (no auth) with paginated envelope (`{items,total,limit,offset}`) + species/breed/gender filters
+- [x] `require_active_pet` gate dependency in `app/api/deps.py` (403 `PET_PROFILE_REQUIRED` — apply to swipe/chat routes in Phases 4–5)
+- [x] `pet_photos` model + migration; **Cloudflare R2** presigned upload service (`app/services/r2.py`) + photo routes (presign/confirm/set-primary/delete, max 5)
+- [ ] Fill in R2 env vars (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_BASE_URL`) — photo endpoints 503 until then
 
 ### Phase 4 — Swipe, Match & Explore
 - [ ] `swipes` + `matches` models + migrations (unique constraint on swiper/swiped pair)
@@ -417,12 +456,9 @@ coordinates to the frontend** and show approximate locations only.
 Don't wait for scaling problems. Route all WS chat messages through Redis Pub/Sub so
 users connected to different backend instances still receive messages.
 
-### 10.3 Current code bugs (fix before/while building auth routes)
-- `app/schemas/auth.py` line 6: `RegisterRequest.password` has `max_length=8` — should be
-  `min_length=8` only (or a sane max like 128). Currently forces exactly-8-char passwords.
-- `app/schemas/auth.py` line 2: unused import `from sqlalchemy import desc` — remove.
-- `app/schemas/` has no `__init__.py`.
-- `app/schemas/auth.py` is **untracked in git** (not committed yet).
+### 10.3 Current code bugs
+All previously listed auth-schema bugs are fixed (`min_length=8, max_length=128`, unused
+import removed, `app/schemas/__init__.py` added). No known open bugs at the moment.
 
 ### 10.4 Deviations from original spec (intentional, keep)
 - Tables are `pet_profiles` (multi-species via `PetSpecies` enum), not `dog_profiles`.
@@ -448,9 +484,10 @@ CORS_ORIGINS                  http://localhost:5173
 ### Backend `.env` — to add later ⬜ (when each integration lands)
 ```
 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET   Google Cloud Console (Phase 2)
-AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY IAM user with S3 access (Phase 3)
-S3_BUCKET_NAME                            e.g. pawsome-photos-prod (Phase 3)
-CLOUDFRONT_DOMAIN                         e.g. d1abc.cloudfront.net (Phase 3)
+R2_ACCOUNT_ID                             Cloudflare dashboard (Phase 3 — needed NOW for photos)
+R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY   R2 API token (Phase 3 — needed NOW for photos)
+R2_BUCKET_NAME                            e.g. pawsome-photos (Phase 3 — needed NOW for photos)
+R2_PUBLIC_BASE_URL                        r2.dev public URL or custom domain (Phase 3)
 OPENAI_API_KEY                            AI bio generation (Phase 7)
 RESEND_API_KEY                            transactional email (Phase 7)
 FIREBASE_SERVICE_ACCOUNT                  JSON key for FCM (Phase 7)
@@ -474,10 +511,10 @@ VITE_STRIPE_PUBLISHABLE_KEY   Stripe dashboard
 
 ```
 backend/app/
-├── main.py                ✅ (needs CORS + router registration)
+├── main.py                ✅ (CORS + auth/pets routers registered)
 ├── api/routes/
-│   ├── auth.py            ⬜ JWT + Google OAuth
-│   ├── pets.py            ⬜ Profile CRUD + photos
+│   ├── auth.py            ✅ JWT done (Google OAuth ⬜)
+│   ├── pets.py            ✅ Profile CRUD (photos ⬜)
 │   ├── swipe.py           ⬜ Like/Pass + match detection
 │   ├── matches.py         ⬜ Match list + details
 │   ├── chat.py            ⬜ WS endpoint + history
@@ -489,8 +526,9 @@ backend/app/
 │   ├── pet_profile.py     ✅
 │   └── (swipe, match, message, pet_photo, ...) ⬜
 ├── schemas/
-│   ├── auth.py            ✅ (has bugs — Section 10.3)
-│   └── (pet, swipe, match, chat, ...) ⬜
+│   ├── auth.py            ✅
+│   ├── pet.py             ✅
+│   └── (swipe, match, chat, ...) ⬜
 ├── services/
 │   ├── s3.py              ⬜ Presigned URL generation
 │   ├── notifications.py   ⬜ FCM + Resend
