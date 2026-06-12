@@ -1,10 +1,12 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_current_user_optional
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.match import Match
 from app.models.pet_profile import PetProfile
@@ -15,7 +17,11 @@ from app.schemas.auth import (
     UserProfileUpdate,
     UserPublicProfile,
     ProfileCompletionStatus,
+    UserPhotoPresignRequest,
+    UserPhotoPresignResponse,
+    UserPhotoConfirmRequest,
 )
+from app.services import r2
 
 router = APIRouter(
     prefix="/users",
@@ -237,3 +243,97 @@ async def get_user_profile(
 
     # Default: public profile only
     return UserPublicProfile.model_validate(target_user)
+
+
+def _require_r2_configured() -> None:
+    if not settings.r2_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Photo storage is not configured",
+        )
+
+
+@router.post("/me/photo/presign", response_model=UserPhotoPresignResponse)
+async def presign_profile_photo_upload(
+    body: UserPhotoPresignRequest,
+    user: User = Depends(get_current_user),
+):
+    """Get presigned URL to upload profile photo directly to R2"""
+    _require_r2_configured()
+
+    object_key = r2.build_user_photo_key(user.id, body.content_type)
+    upload_url = r2.create_presigned_upload(object_key, body.content_type)
+
+    return UserPhotoPresignResponse(
+        upload_url=upload_url,
+        object_key=object_key,
+        expires_in=r2.PRESIGNED_URL_EXPIRES_SECONDS,
+    )
+
+
+@router.post("/me/photo", response_model=UserFullProfile)
+async def confirm_profile_photo_upload(
+    body: UserPhotoConfirmRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm profile photo upload and update user profile"""
+    _require_r2_configured()
+
+    # Verify object key belongs to this user
+    if not body.object_key.startswith(f"users/{user.id}/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Object key does not belong to this user",
+        )
+
+    # Verify file exists and check size
+    size = await run_in_threadpool(r2.get_object_size, body.object_key)
+    if size is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload not found in storage — PUT the file first",
+        )
+    if size > r2.MAX_PHOTO_BYTES:
+        await run_in_threadpool(r2.delete_object, body.object_key)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Image exceeds {r2.MAX_PHOTO_BYTES // (1024 * 1024)} MB limit",
+        )
+
+    # Delete old photo if exists
+    if user.profile_photo_url:
+        old_key = user.profile_photo_url.replace(settings.r2_public_base_url.rstrip('/') + '/', '')
+        if old_key.startswith(f"users/{user.id}/"):
+            await run_in_threadpool(r2.delete_object, old_key)
+
+    # Update user profile
+    user.profile_photo_url = r2.public_url(body.object_key)
+    await db.commit()
+    await db.refresh(user)
+
+    return UserFullProfile.model_validate(user)
+
+
+@router.delete("/me/photo", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_profile_photo(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete profile photo"""
+    _require_r2_configured()
+
+    if not user.profile_photo_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No profile photo to delete",
+        )
+
+    # Extract object key and delete from R2
+    object_key = user.profile_photo_url.replace(settings.r2_public_base_url.rstrip('/') + '/', '')
+    if object_key.startswith(f"users/{user.id}/"):
+        await run_in_threadpool(r2.delete_object, object_key)
+
+    # Clear from database
+    user.profile_photo_url = None
+    await db.commit()
