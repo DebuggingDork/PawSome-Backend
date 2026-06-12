@@ -1,7 +1,7 @@
 from passlib.context import CryptContext
 
 from datetime import UTC,datetime,timedelta
-from uuid import UUID
+from uuid import UUID,uuid4
 from jose import jwt,JWTError
 from app.core.config import settings
 
@@ -25,6 +25,7 @@ def _create_token(*,subject:UUID,token_type:str,expires_delta:timedelta) -> str:
     payload={
         "sub":str(subject),
         "type":token_type,
+        "jti":uuid4().hex,  # unique token id, enables revocation (logout)
         "iat":now,
         "exp":now+expires_delta,
     }
@@ -51,7 +52,9 @@ def decode_token(token:str) -> dict:
         algorithms=[settings.jwt_algorithm],
     )
 
-def verify_token(token:str,expected_type:str) -> UUID:
+def verify_token_payload(token:str,expected_type:str) -> dict:
+    """Validate signature/expiry/type and return the full payload
+    (needed when the caller wants jti/exp, e.g. for revocation)."""
     try:
         payload = decode_token(token)
     except JWTError as exc:
@@ -60,8 +63,11 @@ def verify_token(token:str,expected_type:str) -> UUID:
     if payload.get("type") != expected_type:
         raise ValueError("Invalid Token Type")
 
-    sub =  payload.get("sub")
-    if not sub:
+    if not payload.get("sub"):
         raise ValueError("Missing subject")
-    
-    return UUID(sub)
+
+    return payload
+
+def verify_token(token:str,expected_type:str) -> UUID:
+    payload = verify_token_payload(token,expected_type)
+    return UUID(payload["sub"])

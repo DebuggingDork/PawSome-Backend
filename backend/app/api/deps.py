@@ -20,6 +20,7 @@ from sqlalchemy import select
 # Return User object to route
 
 bearer_scheme = HTTPBearer()
+bearer_scheme_optional = HTTPBearer(auto_error=False)
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
@@ -49,6 +50,24 @@ async def get_current_user(
         )
 
     return user
+
+
+async def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme_optional),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """For public endpoints that behave differently when logged in
+    (e.g. a pet owner viewing their own pet sees full data)."""
+    if credentials is None:
+        return None
+
+    try:
+        user_id = verify_token(credentials.credentials, TOKEN_TYPE_ACCESS)
+    except ValueError:
+        return None
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    return result.scalar_one_or_none()
 
 
 async def require_active_pet(

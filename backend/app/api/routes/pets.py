@@ -1,12 +1,13 @@
 import uuid
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_current_user_optional
 from app.core.database import get_db
-from app.models.pet_profile import PetProfile
+from app.models.pet_profile import PetProfile, PetSpecies
 from app.models.user import User
 from app.schemas.pet import PetCreate, PetPublicResponse, PetResponse, PetUpdate
 
@@ -45,6 +46,32 @@ async def _get_owned_pet(
         )
 
     return pet
+
+
+@router.get("", response_model=list[PetPublicResponse])
+async def browse_pets(
+    species: PetSpecies | None = None,
+    gender: Literal["male", "female"] | None = None,
+    breed: str | None = Query(default=None, max_length=100),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """Public catalog of all active pets — no account needed, like browsing
+    products in a store. Coordinates are never exposed here."""
+    query = select(PetProfile).where(PetProfile.is_active.is_(True))
+
+    if species is not None:
+        query = query.where(PetProfile.species == species)
+    if gender is not None:
+        query = query.where(PetProfile.gender == gender)
+    if breed is not None:
+        query = query.where(PetProfile.breed.ilike(f"%{breed}%"))
+
+    result = await db.execute(
+        query.order_by(PetProfile.created_at.desc()).limit(limit).offset(offset)
+    )
+    return result.scalars().all()
 
 
 @router.post("", response_model=PetResponse, status_code=status.HTTP_201_CREATED)
@@ -98,11 +125,11 @@ async def list_my_pets(
 @router.get("/{pet_id}", response_model=PetResponse | PetPublicResponse)
 async def get_pet(
     pet_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
-    """View any active pet. Browsing is open to all authenticated users,
-    even those without a registered pet. Owners get full data (incl. coordinates);
+    """View any active pet — public, no account needed (like a product detail
+    page). The owner, when logged in, gets full data including coordinates;
     everyone else gets the public view."""
     result = await db.execute(
         select(PetProfile).where(
@@ -118,7 +145,7 @@ async def get_pet(
             detail="Pet not found",
         )
 
-    if pet.user_id == user.id:
+    if user is not None and pet.user_id == user.id:
         return PetResponse.model_validate(pet)
     return PetPublicResponse.model_validate(pet)
 
