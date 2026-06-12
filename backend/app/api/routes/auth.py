@@ -25,9 +25,12 @@ from app.schemas.auth import (
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
+    ResendVerificationRequest,
     TokenResponse,
     UserResponse,
+    VerifyEmailRequest,
 )
+from app.services import email as email_service
 
 router = APIRouter(
     prefix="/auth",
@@ -55,7 +58,11 @@ async def _is_token_revoked(redis: Redis, payload: dict) -> bool:
     return await redis.exists(f"{REVOKED_TOKEN_PREFIX}{jti}") == 1
 
 @router.post("/register",response_model=TokenResponse,status_code=status.HTTP_201_CREATED)
-async def register( body: RegisterRequest , db:AsyncSession = Depends(get_db)):
+async def register(
+    body: RegisterRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
     existing = await db.execute(select(User).where(User.email == body.email))
     if existing.scalar_one_or_none():
         raise HTTPException(
@@ -70,6 +77,10 @@ async def register( body: RegisterRequest , db:AsyncSession = Depends(get_db)):
     db.add(user)
     await db.commit()
     await db.refresh(user)
+
+    # Send verification email
+    token = await email_service.generate_verification_token(redis, str(user.id))
+    email_service.send_verification_email(user.email, token)
 
     return TokenResponse(
         access_token = create_access_token(user.id),
@@ -149,3 +160,79 @@ async def logout(body: RefreshRequest, redis: Redis = Depends(get_redis)):
 @router.get("/me", response_model=UserResponse)
 async def me(user: User = Depends(get_current_user)):
     return user
+
+
+@router.post("/verify-email", response_model=UserResponse)
+async def verify_email(
+    body: VerifyEmailRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Verify user email address using token from email"""
+    user_id = await email_service.verify_token(redis, body.token)
+    
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+    
+    # Get user and mark as verified
+    result = await db.execute(
+        select(User).where(User.id == uuid.UUID(user_id))
+    )
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    
+    if user.is_verified:
+        # Already verified, that's okay
+        return user
+    
+    user.is_verified = True
+    await db.commit()
+    await db.refresh(user)
+    
+    # Send welcome email
+    email_service.send_welcome_email(user.email, user.full_name)
+    
+    # Grant achievement
+    from app.models.user_achievement import AchievementType
+    from app.services import achievements
+    
+    await achievements.grant_achievement(db, user.id, AchievementType.VERIFIED_EMAIL)
+    
+    return user
+
+
+@router.post("/resend-verification", status_code=status.HTTP_200_OK)
+async def resend_verification(
+    body: ResendVerificationRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Resend verification email"""
+    result = await db.execute(
+        select(User).where(User.email == body.email)
+    )
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        # Don't reveal if email exists for security
+        return {"message": "If the email exists, a verification link has been sent"}
+    
+    if user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already verified",
+        )
+    
+    # Generate new token and send email
+    token = await email_service.generate_verification_token(redis, str(user.id))
+    email_service.send_verification_email(user.email, token)
+    
+    return {"message": "Verification email sent"}

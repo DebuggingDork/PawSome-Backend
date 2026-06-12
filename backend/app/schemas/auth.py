@@ -84,6 +84,14 @@ class UserPhotoConfirmRequest(BaseModel):
     object_key: str = Field(min_length=1, max_length=512)
 
 
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(min_length=1, description="Verification token from email")
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr = Field(description="Email address to resend verification to")
+
+
 class ProfileCompletionStatus(BaseModel):
     """Profile completion tracking for gamified onboarding"""
     completion_percentage: int = Field(ge=0, le=100, description="Overall profile completion (0-100)")

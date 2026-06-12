@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = Field(7, description="Refresh token expire days")
 
     cors_origins: str = Field("http://localhost:5173", description="CORS Origins")
+    frontend_url: str = Field("http://localhost:5173", description="Frontend base URL for email links")
 
     # Cloudflare R2 (S3-compatible). Empty defaults let the app boot without
     # photo support; photo endpoints return 503 until these are set.
