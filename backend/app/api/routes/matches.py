@@ -253,8 +253,21 @@ async def get_likes_received(
     )
     
     pets = pets_result.scalars().all()
+    
+    # Fetch owner info for all pets
+    user_ids = [p.user_id for p in pets]
+    users_result = await db.execute(select(User).where(User.id.in_(user_ids)))
+    users_map = {u.id: u for u in users_result.scalars().all()}
+    
+    # Build response with owner info
+    pets_with_owner = []
+    for p in pets:
+        pet_dict = PetPublicResponse.model_validate(p).model_dump()
+        pet_dict["owner"] = users_map.get(p.user_id)
+        pets_with_owner.append(PetPublicResponse.model_validate(pet_dict))
+    
     return {
-        "pets": [PetPublicResponse.model_validate(p) for p in pets],
+        "pets": pets_with_owner,
         "total": len(pets),
     }
 
@@ -419,15 +432,25 @@ async def get_swipe_history(
     )
     pets_map = {pet.id: pet for pet in pets_result.scalars().all()}
     
+    # Fetch owner info for all pets
+    user_ids = [p.user_id for p in pets_map.values()]
+    users_result = await db.execute(select(User).where(User.id.in_(user_ids)))
+    users_map = {u.id: u for u in users_result.scalars().all()}
+    
     result = []
     for swipe in swipes:
         target_pet = pets_map.get(swipe.target_pet_id)
         if target_pet:
+            # Add owner info to pet response
+            pet_dict = PetPublicResponse.model_validate(target_pet).model_dump()
+            pet_dict["owner"] = users_map.get(target_pet.user_id)
+            pet_with_owner = PetPublicResponse.model_validate(pet_dict)
+            
             result.append({
                 "swipe_id": str(swipe.id),
                 "action": swipe.action.value,
                 "created_at": swipe.created_at.isoformat(),
-                "target_pet": PetPublicResponse.model_validate(target_pet),
+                "target_pet": pet_with_owner,
             })
     
     return {"swipes": result, "total": len(result)}
