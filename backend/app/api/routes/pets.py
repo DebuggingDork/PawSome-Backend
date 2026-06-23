@@ -105,7 +105,7 @@ async def create_pet(
 
     pet = PetProfile(
         user_id=user.id,
-        is_active=False,  # Start as inactive, will be activated after first photo
+        is_active= False,  # Start as inactive, will be activated after first photo
         **body.model_dump(),
     )
     db.add(pet)
@@ -118,6 +118,7 @@ async def create_pet(
     await achievements.grant_achievement(db, user.id, AchievementType.PET_CREATED)
 
     # Return pet with owner info to match PetResponse schema
+    pet.owner = user
     pet_dict = PetResponse.model_validate(pet).model_dump()
     pet_dict["owner"] = user
     return PetResponse.model_validate(pet_dict)
