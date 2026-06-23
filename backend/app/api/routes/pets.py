@@ -143,6 +143,7 @@ async def list_my_pets(
     # Add owner info to each pet
     response = []
     for pet in pets:
+        pet.owner = user
         pet_dict = PetResponse.model_validate(pet).model_dump()
         pet_dict["owner"] = user
         response.append(PetResponse.model_validate(pet_dict))

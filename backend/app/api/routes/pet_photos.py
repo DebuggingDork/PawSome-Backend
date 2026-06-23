@@ -5,7 +5,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_owned_pet
+from app.api.deps import get_owned_pet, get_owned_pet_any
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.pet_photo import PetPhoto
@@ -64,7 +64,7 @@ async def _get_owned_photo(
 @router.post("/presign", response_model=PhotoPresignResponse)
 async def presign_photo_upload(
     body: PhotoPresignRequest,
-    pet: PetProfile = Depends(get_owned_pet),
+    pet: PetProfile = Depends(get_owned_pet_any),
     db: AsyncSession = Depends(get_db),
 ):
     """Step 1 of upload: get a short-lived URL to PUT the image directly to R2.
@@ -90,7 +90,7 @@ async def presign_photo_upload(
 @router.post("", response_model=PetPhotoResponse, status_code=status.HTTP_201_CREATED)
 async def confirm_photo_upload(
     body: PhotoConfirmRequest,
-    pet: PetProfile = Depends(get_owned_pet),
+    pet: PetProfile = Depends(get_owned_pet_any),
     db: AsyncSession = Depends(get_db),
 ):
     """Step 2 of upload: after PUTting the file, confirm it so it's saved
