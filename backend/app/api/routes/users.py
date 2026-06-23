@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
@@ -9,6 +10,7 @@ from app.api.deps import get_current_user, get_current_user_optional
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.match import Match
+from app.models.match_preference import MatchPreference
 from app.models.pet_profile import PetProfile
 from app.models.user import User
 from app.schemas.auth import (
@@ -21,6 +23,7 @@ from app.schemas.auth import (
     UserPhotoPresignResponse,
     UserPhotoConfirmRequest,
 )
+from app.schemas.preferences import UpdatePreferencesRequest, MatchPreferenceResponse
 from app.services import r2
 
 router = APIRouter(
@@ -381,3 +384,33 @@ async def delete_profile_photo(
     # Clear from database
     user.profile_photo_url = None
     await db.commit()
+
+
+@router.put("/me/match-preferences", response_model=MatchPreferenceResponse)
+async def upsert_match_preferences(
+    body: UpdatePreferencesRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create or update the authenticated user's match preferences."""
+    result = await db.execute(
+        select(MatchPreference).where(MatchPreference.user_id == current_user.id)
+    )
+    pref = result.scalar_one_or_none()
+
+    if pref is not None:
+        # Update only fields that were explicitly set in the request
+        updates = body.model_dump(exclude_unset=True)
+        for field, value in updates.items():
+            setattr(pref, field, value)
+        pref.updated_at = datetime.now(timezone.utc)
+    else:
+        # Create a new record with all provided fields
+        pref_data = body.model_dump(exclude_unset=True)
+        pref = MatchPreference(user_id=current_user.id, **pref_data)
+        db.add(pref)
+
+    await db.commit()
+    await db.refresh(pref)
+
+    return MatchPreferenceResponse.model_validate(pref)
