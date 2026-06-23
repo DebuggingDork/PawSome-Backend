@@ -4,7 +4,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
-class Base(DeclarativeBase): #Base lives here for now. Some teams move it to models/base.py later — either is fine.
+class Base(DeclarativeBase): #Base lives here.
     pass
 
 engine = create_async_engine(
