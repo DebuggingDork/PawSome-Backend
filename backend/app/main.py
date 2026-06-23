@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 from app.core.config import settings
-from app.api.routes import achievements, auth, chat, favorites, matches, onboarding, pet_photos, pets, users
+from app.api.routes import achievements, auth, blocks, chat, favorites, matches, onboarding, pet_photos, pets, reports, users
 
 from app.core.cors import setup_cors
 
@@ -18,6 +18,7 @@ app.include_router(pet_photos.router)
 app.include_router(matches.router)
 app.include_router(favorites.router)
 app.include_router(chat.router)
+app.include_router(reports.router)
 
 @app.get("/")
 def root():
