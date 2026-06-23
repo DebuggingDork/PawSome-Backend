@@ -102,6 +102,23 @@ async def get_owned_pet(
     return pet
 
 
+async def get_owned_pet_any(
+    pet_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PetProfile:
+    """Like get_owned_pet but includes inactive pets — required for photo upload on newly created pets."""
+    result = await db.execute(
+        select(PetProfile).where(PetProfile.id == pet_id)
+    )
+    pet = result.scalar_one_or_none()
+    if pet is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pet not found")
+    if pet.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not own this pet")
+    return pet
+
+
 async def require_active_pet(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
