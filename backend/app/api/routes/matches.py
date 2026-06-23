@@ -1,15 +1,16 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from redis.asyncio import Redis
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.rate_limit import undo_rate_limit
 from app.core.redis import get_redis
+from app.models.favorite import Favorite
 from app.models.match import Match
 from app.models.notification import Notification, NotificationType
 from app.models.pet_profile import PetProfile
@@ -24,6 +25,13 @@ from app.schemas.match import (
     SwipeResponse,
 )
 from app.schemas.pet import PetPublicResponse, PetResponse
+from app.schemas.statistics import (
+    DailySwipeStats,
+    SwipeHistoryItem,
+    SwipeHistoryResponse,
+    SwipeStatisticsResponse,
+    TopBreed,
+)
 from app.schemas.undo import UndoSwipeRequest, UndoSwipeResponse
 
 router = APIRouter(
@@ -130,6 +138,18 @@ async def swipe_on_pet(
         )
         db.add(notification_target)
     
+    # Auto-remove favorite: if pet had favorited the target, soft-delete it on swipe
+    existing_favorite_result = await db.execute(
+        select(Favorite).where(
+            Favorite.pet_id == body.pet_id,
+            Favorite.target_pet_id == body.target_pet_id,
+            Favorite.deleted_at.is_(None),
+        )
+    )
+    existing_favorite = existing_favorite_result.scalar_one_or_none()
+    if existing_favorite is not None:
+        existing_favorite.deleted_at = datetime.now(timezone.utc)
+
     await db.commit()
     await db.refresh(swipe)
     
@@ -380,18 +400,25 @@ async def mark_notifications_read(
     await db.commit()
 
 
-@router.get("/swipe-history")
+@router.get("/swipe-history", response_model=SwipeHistoryResponse)
 async def get_swipe_history(
     pet_id: uuid.UUID = Query(description="Your pet ID"),
     action: str | None = Query(default=None, description="Filter by action: like or skip"),
+    breed: str | None = Query(default=None, description="Filter by target pet breed (case-insensitive contains)"),
+    date_from: str | None = Query(default=None, description="ISO date YYYY-MM-DD — start of range"),
+    date_to: str | None = Query(default=None, description="ISO date YYYY-MM-DD — end of range"),
     limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get the swipe history for your pet - see who you've liked or skipped.
+    Get the swipe history for your pet — see who you've liked or skipped.
+
+    Supports filtering by action, breed, date range, and pagination via limit/offset.
+    Only non-undone swipes are returned.
     """
-    
+
     # Verify pet belongs to user
     pet_result = await db.execute(
         select(PetProfile).where(
@@ -401,14 +428,19 @@ async def get_swipe_history(
         )
     )
     pet = pet_result.scalar_one_or_none()
-    
+
     if not pet:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Your pet not found or inactive",
         )
-    
-    filters = [Swipe.swiper_pet_id == pet_id]
+
+    # Base filters — always exclude undone swipes
+    filters = [
+        Swipe.swiper_pet_id == pet_id,
+        Swipe.is_undone == False,  # noqa: E712
+    ]
+
     if action:
         if action not in ["like", "skip"]:
             raise HTTPException(
@@ -416,48 +448,94 @@ async def get_swipe_history(
                 detail="Invalid action. Must be 'like' or 'skip'",
             )
         filters.append(Swipe.action == SwipeAction(action))
-    
+
+    if date_from:
+        try:
+            dt_from = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="date_from must be in YYYY-MM-DD format",
+            )
+        filters.append(Swipe.created_at >= dt_from)
+
+    if date_to:
+        try:
+            # Include the full end day by pushing to the next day
+            dt_to = datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="date_to must be in YYYY-MM-DD format",
+            )
+        filters.append(Swipe.created_at < dt_to)
+
+    # If breed filter is requested, resolve the matching pet IDs first
+    if breed:
+        breed_pets_result = await db.execute(
+            select(PetProfile.id).where(
+                PetProfile.breed.ilike(f"%{breed}%")
+            )
+        )
+        breed_pet_ids = [row[0] for row in breed_pets_result.all()]
+        if not breed_pet_ids:
+            return SwipeHistoryResponse(swipes=[], total=0, limit=limit, offset=offset)
+        filters.append(Swipe.target_pet_id.in_(breed_pet_ids))
+
+    # Count query for total
+    count_result = await db.execute(
+        select(func.count()).select_from(Swipe).where(*filters)
+    )
+    total = count_result.scalar_one()
+
+    # Paginated fetch
     swipes_result = await db.execute(
         select(Swipe)
         .where(*filters)
         .order_by(Swipe.created_at.desc())
         .limit(limit)
+        .offset(offset)
     )
-    
     swipes = swipes_result.scalars().all()
-    
+
     if not swipes:
-        return {"swipes": [], "total": 0}
-    
+        return SwipeHistoryResponse(swipes=[], total=total, limit=limit, offset=offset)
+
     # Get target pet details
     target_pet_ids = [s.target_pet_id for s in swipes]
     pets_result = await db.execute(
         select(PetProfile).where(PetProfile.id.in_(target_pet_ids))
     )
-    pets_map = {pet.id: pet for pet in pets_result.scalars().all()}
-    
+    pets_map = {p.id: p for p in pets_result.scalars().all()}
+
     # Fetch owner info for all pets
-    user_ids = [p.user_id for p in pets_map.values()]
+    user_ids = list({p.user_id for p in pets_map.values()})
     users_result = await db.execute(select(User).where(User.id.in_(user_ids)))
     users_map = {u.id: u for u in users_result.scalars().all()}
-    
-    result = []
+
+    history_items: list[SwipeHistoryItem] = []
     for swipe in swipes:
         target_pet = pets_map.get(swipe.target_pet_id)
         if target_pet:
-            # Add owner info to pet response
             pet_dict = PetPublicResponse.model_validate(target_pet).model_dump()
-            pet_dict["owner"] = users_map.get(target_pet.user_id)
-            pet_with_owner = PetPublicResponse.model_validate(pet_dict)
-            
-            result.append({
-                "swipe_id": str(swipe.id),
-                "action": swipe.action.value,
-                "created_at": swipe.created_at.isoformat(),
-                "target_pet": pet_with_owner,
-            })
-    
-    return {"swipes": result, "total": len(result)}
+            owner = users_map.get(target_pet.user_id)
+            if owner:
+                pet_dict["owner"] = owner
+            history_items.append(
+                SwipeHistoryItem(
+                    swipe_id=swipe.id,
+                    action=swipe.action.value,
+                    created_at=swipe.created_at,
+                    target_pet=pet_dict,
+                )
+            )
+
+    return SwipeHistoryResponse(
+        swipes=history_items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 
@@ -739,4 +817,139 @@ async def undo_swipe(
         message="Swipe undone successfully",
         swipe_id=swipe.id,
         action_taken="match_deleted" if match_was_deleted else "swipe_reverted",
+    )
+
+
+@router.get("/statistics", response_model=SwipeStatisticsResponse)
+async def get_swipe_statistics(
+    pet_id: uuid.UUID = Query(description="Your pet ID to fetch statistics for"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get aggregated swipe statistics for a pet.
+
+    Returns:
+    - Total likes and skips sent
+    - Like-to-skip ratio
+    - Number of matches created
+    - Swipe activity for the last 30 days (per-day breakdown)
+    - Top 3 breeds liked
+    - Average response time (reserved for future implementation)
+    """
+
+    # 1. Verify pet belongs to the authenticated user
+    pet_result = await db.execute(
+        select(PetProfile).where(
+            PetProfile.id == pet_id,
+            PetProfile.user_id == user.id,
+            PetProfile.is_active.is_(True),
+        )
+    )
+    pet = pet_result.scalar_one_or_none()
+    if not pet:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Pet not found or does not belong to you",
+        )
+
+    # 2. Total likes
+    likes_result = await db.execute(
+        select(func.count()).select_from(Swipe).where(
+            Swipe.swiper_pet_id == pet_id,
+            Swipe.action == SwipeAction.LIKE,
+            Swipe.is_undone == False,  # noqa: E712
+        )
+    )
+    total_likes: int = likes_result.scalar_one()
+
+    # 3. Total skips
+    skips_result = await db.execute(
+        select(func.count()).select_from(Swipe).where(
+            Swipe.swiper_pet_id == pet_id,
+            Swipe.action == SwipeAction.SKIP,
+            Swipe.is_undone == False,  # noqa: E712
+        )
+    )
+    total_skips: int = skips_result.scalar_one()
+
+    # 4. Like-to-skip ratio
+    if total_skips > 0:
+        like_to_skip_ratio = total_likes / total_skips
+    else:
+        like_to_skip_ratio = float(total_likes)
+
+    # 5. Matches created (not soft-deleted)
+    matches_result = await db.execute(
+        select(func.count()).select_from(Match).where(
+            or_(Match.pet1_id == pet_id, Match.pet2_id == pet_id),
+            Match.deleted_at.is_(None),
+        )
+    )
+    matches_created: int = matches_result.scalar_one()
+
+    # 6. Last 30 days — Python-side aggregation
+    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    recent_swipes_result = await db.execute(
+        select(Swipe).where(
+            Swipe.swiper_pet_id == pet_id,
+            Swipe.is_undone == False,  # noqa: E712
+            Swipe.created_at >= thirty_days_ago,
+        )
+    )
+    recent_swipes = recent_swipes_result.scalars().all()
+
+    daily_map: dict[str, dict[str, int]] = {}
+    for swipe in recent_swipes:
+        # Normalise to UTC date string
+        swipe_date = swipe.created_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        if swipe_date not in daily_map:
+            daily_map[swipe_date] = {"likes": 0, "skips": 0}
+        if swipe.action == SwipeAction.LIKE:
+            daily_map[swipe_date]["likes"] += 1
+        else:
+            daily_map[swipe_date]["skips"] += 1
+
+    last_30_days = [
+        DailySwipeStats(date=date_str, likes=counts["likes"], skips=counts["skips"])
+        for date_str, counts in sorted(daily_map.items())
+    ]
+
+    # 7. Top breeds liked — Python-side groupby
+    liked_swipes_result = await db.execute(
+        select(Swipe.target_pet_id).where(
+            Swipe.swiper_pet_id == pet_id,
+            Swipe.action == SwipeAction.LIKE,
+            Swipe.is_undone == False,  # noqa: E712
+        )
+    )
+    liked_target_ids = [row[0] for row in liked_swipes_result.all()]
+
+    top_breeds: list[TopBreed] = []
+    if liked_target_ids:
+        target_pets_result = await db.execute(
+            select(PetProfile.breed).where(PetProfile.id.in_(liked_target_ids))
+        )
+        breed_counts: dict[str, int] = {}
+        for (breed_name,) in target_pets_result.all():
+            if breed_name:
+                breed_counts[breed_name] = breed_counts.get(breed_name, 0) + 1
+
+        top_breeds = [
+            TopBreed(breed=breed_name, count=count)
+            for breed_name, count in sorted(breed_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        ]
+
+    # 8. Average response time — deferred (complex calculation)
+    avg_response_time_minutes: float | None = None
+
+    return SwipeStatisticsResponse(
+        pet_id=pet_id,
+        total_likes=total_likes,
+        total_skips=total_skips,
+        like_to_skip_ratio=like_to_skip_ratio,
+        matches_created=matches_created,
+        avg_response_time_minutes=avg_response_time_minutes,
+        last_30_days=last_30_days,
+        top_breeds_liked=top_breeds,
     )
