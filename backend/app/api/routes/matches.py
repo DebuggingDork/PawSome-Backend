@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.core.rate_limit import undo_rate_limit
 from app.core.redis import get_redis
 from app.models.favorite import Favorite
+from app.models.block import Block
 from app.models.match import Match
 from app.models.notification import Notification, NotificationType
 from app.models.pet_profile import PetProfile

@@ -17,6 +17,7 @@ app.include_router(pets.router)
 app.include_router(pet_photos.router)
 app.include_router(matches.router)
 app.include_router(favorites.router)
+app.include_router(blocks.router)
 app.include_router(chat.router)
 app.include_router(reports.router)
 
