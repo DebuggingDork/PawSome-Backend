@@ -1,11 +1,15 @@
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.message_reaction import MessageReaction
 
 
 class Message(Base):
@@ -48,4 +52,11 @@ class Message(Base):
     # Soft-delete timestamp for chat enhancements (15-minute deletion window)
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # Relationships
+    reactions: Mapped[list["MessageReaction"]] = relationship(
+        back_populates="message",
+        lazy="selectin",
+        cascade="all, delete-orphan",
     )
