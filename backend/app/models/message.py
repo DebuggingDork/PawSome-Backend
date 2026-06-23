@@ -44,3 +44,8 @@ class Message(Base):
     
     # Soft delete for message history
     is_deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    
+    # Soft-delete timestamp for chat enhancements (15-minute deletion window)
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

@@ -2,13 +2,14 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
 if TYPE_CHECKING:
+    from app.models.match_preference import MatchPreference
     from app.models.pet_profile import PetProfile
 
 class User(Base):
@@ -70,6 +71,23 @@ class User(Base):
         nullable=True,
     )
 
+    # Location-based matching fields
+    latitude: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    longitude: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    preferred_match_radius_km: Mapped[float | None] = mapped_column(
+        Float,
+        default=50.0,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -86,4 +104,10 @@ class User(Base):
     pet_profiles: Mapped[list["PetProfile"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+
+    match_preference: Mapped["MatchPreference | None"] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
     )

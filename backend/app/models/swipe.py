@@ -48,9 +48,20 @@ class Swipe(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     
+    # Undo functionality fields
+    is_undone: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    
+    undone_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    
     __table_args__ = (
         # One swipe per pet pair - can't swipe twice on same pet
         UniqueConstraint("swiper_pet_id", "target_pet_id", name="uq_swipe_pair"),
         # Index for finding mutual likes
         Index("ix_swipes_target_action", "target_pet_id", "action"),
+        # Index for time-based queries (undo window)
+        Index("ix_swipes_created_at", "created_at"),
     )
