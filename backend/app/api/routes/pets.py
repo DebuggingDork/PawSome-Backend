@@ -117,7 +117,10 @@ async def create_pet(
     from app.services import achievements
     await achievements.grant_achievement(db, user.id, AchievementType.PET_CREATED)
 
-    return pet
+    # Return pet with owner info to match PetResponse schema
+    pet_dict = PetResponse.model_validate(pet).model_dump()
+    pet_dict["owner"] = user
+    return PetResponse.model_validate(pet_dict)
 
 
 @router.get("/me", response_model=list[PetResponse])
@@ -134,7 +137,16 @@ async def list_my_pets(
         )
         .order_by(PetProfile.created_at)
     )
-    return result.scalars().all()
+    pets = result.scalars().all()
+    
+    # Add owner info to each pet
+    response = []
+    for pet in pets:
+        pet_dict = PetResponse.model_validate(pet).model_dump()
+        pet_dict["owner"] = user
+        response.append(PetResponse.model_validate(pet_dict))
+    
+    return response
 
 
 @router.get("/{pet_id}", response_model=PetResponse | PetPublicResponse)
@@ -161,7 +173,10 @@ async def get_pet(
         )
 
     if user is not None and pet.user_id == user.id:
-        return PetResponse.model_validate(pet)
+        # Owner's view - include owner info
+        pet_dict = PetResponse.model_validate(pet).model_dump()
+        pet_dict["owner"] = user
+        return PetResponse.model_validate(pet_dict)
     
     # Public view - include owner info
     pet_dict = PetPublicResponse.model_validate(pet).model_dump()
@@ -174,6 +189,7 @@ async def update_pet(
     body: PetUpdate,
     pet: PetProfile = Depends(get_owned_pet),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     updates = body.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -182,7 +198,10 @@ async def update_pet(
     await db.commit()
     await db.refresh(pet)
 
-    return pet
+    # Return pet with owner info
+    pet_dict = PetResponse.model_validate(pet).model_dump()
+    pet_dict["owner"] = user
+    return PetResponse.model_validate(pet_dict)
 
 
 @router.delete("/{pet_id}", status_code=status.HTTP_204_NO_CONTENT)
