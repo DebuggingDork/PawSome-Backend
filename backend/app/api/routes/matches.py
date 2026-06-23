@@ -1,12 +1,15 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from redis.asyncio import Redis
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
+from app.core.rate_limit import undo_rate_limit
+from app.core.redis import get_redis
 from app.models.match import Match
 from app.models.notification import Notification, NotificationType
 from app.models.pet_profile import PetProfile
@@ -21,6 +24,7 @@ from app.schemas.match import (
     SwipeResponse,
 )
 from app.schemas.pet import PetPublicResponse, PetResponse
+from app.schemas.undo import UndoSwipeRequest, UndoSwipeResponse
 
 router = APIRouter(
     prefix="/matches",
@@ -626,3 +630,113 @@ async def reject_like(
     return {
         "message": "Like rejected. No match created.",
     }
+
+
+@router.post("/undo-swipe", response_model=UndoSwipeResponse)
+async def undo_swipe(
+    body: UndoSwipeRequest,
+    current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(undo_rate_limit),
+    redis: Redis = Depends(get_redis),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Undo a previous swipe within the 5-minute window.
+
+    - 404 if swipe not found
+    - 403 if swiper pet does not belong to the current user
+    - 400 if already undone
+    - 400 if the 5-minute undo window has expired
+    - 400 if the resulting match has messages (cannot undo with message history)
+    - Soft-deletes the match if one exists and has no messages
+    """
+
+    # 1. Fetch the swipe
+    swipe_result = await db.execute(
+        select(Swipe).where(Swipe.id == body.swipe_id)
+    )
+    swipe = swipe_result.scalar_one_or_none()
+
+    if swipe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Swipe not found",
+        )
+
+    # 2. Verify ownership — swiper pet must belong to the current user
+    pet_result = await db.execute(
+        select(PetProfile).where(
+            PetProfile.id == swipe.swiper_pet_id,
+            PetProfile.user_id == current_user.id,
+        )
+    )
+    if pet_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not own the pet that performed this swipe",
+        )
+
+    # 3. Already undone?
+    if swipe.is_undone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Swipe already undone",
+        )
+
+    # 4. Time-window check (5 minutes = 300 seconds)
+    now = datetime.now(timezone.utc)
+    swipe_age = (now - swipe.created_at).total_seconds()
+    if swipe_age > 300:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Undo window expired (5 minutes)",
+        )
+
+    # 5. Look for an active match between swiper_pet and target_pet
+    swiper_id = swipe.swiper_pet_id
+    target_id = swipe.target_pet_id
+    pet1_id, pet2_id = sorted([swiper_id, target_id])
+
+    match_result = await db.execute(
+        select(Match).where(
+            Match.pet1_id == pet1_id,
+            Match.pet2_id == pet2_id,
+            Match.deleted_at.is_(None),
+        )
+    )
+    match = match_result.scalar_one_or_none()
+
+    # 6. If a match exists, check for messages
+    if match is not None:
+        from app.models.message import Message
+
+        msg_count_result = await db.execute(
+            select(Message).where(
+                Message.match_id == match.id,
+                Message.deleted_at.is_(None),
+            )
+        )
+        messages = msg_count_result.scalars().all()
+        if len(messages) > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot undo: messages exist in this match",
+            )
+
+    # 7. Apply changes in a single transaction
+    swipe.is_undone = True
+    swipe.undone_at = now
+
+    match_was_deleted = False
+    if match is not None:
+        match.deleted_at = now
+        match_was_deleted = True
+
+    await db.commit()
+
+    # 8. Build response
+    return UndoSwipeResponse(
+        message="Swipe undone successfully",
+        swipe_id=swipe.id,
+        action_taken="match_deleted" if match_was_deleted else "swipe_reverted",
+    )
