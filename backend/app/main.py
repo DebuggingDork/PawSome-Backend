@@ -5,9 +5,24 @@ from app.api.routes import achievements, auth, blocks, chat, favorites, matches,
 
 from app.core.cors import setup_cors
 
-app = FastAPI(title="PawSome API", description="DOG MATCHING AND CHATTING APP")
+app = FastAPI(
+    title="PawSome API", 
+    description="DOG MATCHING AND CHATTING APP",
+    version="1.0.0"
+)
 
 setup_cors(app)
+
+@app.on_event("startup")
+async def startup_event():
+    print("\n" + "="*60)
+    print("🐾 PawSome Backend Starting...")
+    print("="*60)
+    print(f"📍 Environment: {settings.app_env}")
+    print(f"🌐 API Docs: http://localhost:8000/docs")
+    print(f"💚 Health Check: http://localhost:8000/health")
+    print(f"🔗 Frontend URL: {settings.frontend_url}")
+    print("="*60 + "\n")
 
 app.include_router(auth.router)
 app.include_router(users.router)
