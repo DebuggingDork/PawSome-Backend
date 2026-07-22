@@ -32,7 +32,7 @@ async def verify_match_access(match_id: uuid.UUID, user: User, db: AsyncSession)
     """Verify user has access to this match and return the match + user's pet_id"""
     # Get the match
     result = await db.execute(
-        select(Match).where(Match.id == match_id)
+        select(Match).where(Match.id == match_id, Match.deleted_at.is_(None))
     )
     match = result.scalar_one_or_none()
     

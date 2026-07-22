@@ -205,7 +205,8 @@ async def get_my_matches(
             or_(
                 Match.pet1_id.in_(user_pet_ids),
                 Match.pet2_id.in_(user_pet_ids),
-            )
+            ),
+            Match.deleted_at.is_(None),
         )
         .order_by(Match.created_at.desc())
     )
@@ -574,6 +575,7 @@ async def accept_like(
         select(Match).where(
             Match.pet1_id == pet1_id,
             Match.pet2_id == pet2_id,
+            Match.deleted_at.is_(None),
         )
     )
     
