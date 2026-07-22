@@ -36,6 +36,8 @@ class UserProfileUpdate(BaseModel):
     bio: str | None = Field(default=None, max_length=2000)
     address: str | None = Field(default=None, max_length=500)
     profile_photo_url: str | None = Field(default=None, max_length=512)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
 
 
 class UserPublicProfile(BaseModel):
@@ -64,6 +66,9 @@ class UserFullProfile(UserPrivateProfile):
     """Full profile - includes email, only for the owner"""
     email: EmailStr
     is_verified: bool
+    # Exact coordinates are owner-only (never surfaced on UserPublicProfile/UserPrivateProfile).
+    latitude: float | None
+    longitude: float | None
 
     model_config = {
         "from_attributes": True,
