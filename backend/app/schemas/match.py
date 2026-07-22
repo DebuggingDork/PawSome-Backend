@@ -14,6 +14,7 @@ class SwipeRequest(BaseModel):
 
 class SwipeResponse(BaseModel):
     """Response after a swipe"""
+    id: UUID  # The swipe's own id, needed by POST /matches/undo-swipe
     swiper_pet_id: UUID
     target_pet_id: UUID
     action: str

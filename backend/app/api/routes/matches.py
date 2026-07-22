@@ -157,6 +157,7 @@ async def swipe_on_pet(
     await db.refresh(swipe)
     
     return SwipeResponse(
+        id=swipe.id,
         swiper_pet_id=swipe.swiper_pet_id,
         target_pet_id=swipe.target_pet_id,
         action=swipe.action.value,
