@@ -963,12 +963,16 @@ async def get_swipe_statistics(
 
 @router.get("/browse", response_model=BrowsePetsResponse)
 async def browse_pets(
-    pet_id: uuid.UUID = Query(description="Your pet ID doing the browsing"),
-    radius: float = Query(default=50, ge=1, le=500, description="Search radius in km"),
+    pet_id: uuid.UUID | None = Query(default=None, description="Your pet ID doing the browsing (optional for simple browse)"),
+    radius: float = Query(default=5000, ge=1, le=5000, description="Search radius in km (default: 5000 = show all)"),
     species: str | None = Query(default=None, description="Filter by species"),
+    breed: str | None = Query(default=None, description="Filter by breed (partial match)"),
     age_min: int | None = Query(default=None, ge=0, description="Minimum age in months"),
     age_max: int | None = Query(default=None, ge=0, description="Maximum age in months"),
     gender: str | None = Query(default=None, description="Filter by gender"),
+    is_vaccinated: bool | None = Query(default=None, description="Filter by vaccination status"),
+    is_neutered: bool | None = Query(default=None, description="Filter by neutered status"),
+    is_trained: bool | None = Query(default=None, description="Filter by training status"),
     limit: int = Query(default=50, ge=1, le=50, description="Max results"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -977,58 +981,64 @@ async def browse_pets(
     Browse pet candidates within a distance radius.
 
     Returns active pets within `radius` km, sorted by distance ascending.
-    Excludes the caller's own pets and any pets already swiped on.
-    Supports optional filtering by species, age range, and gender.
+    If no pet_id provided, shows all pets without filtering by swipes.
+    Supports optional filtering by species, breed, age range, gender, and health attributes.
     """
 
-    # 1. Verify pet_id belongs to current_user and is active
-    pet_result = await db.execute(
-        select(PetProfile).where(
-            PetProfile.id == pet_id,
-            PetProfile.user_id == current_user.id,
-            PetProfile.is_active.is_(True),
+    # 1. Verify pet_id belongs to current_user and is active (if provided)
+    my_pet = None
+    own_pet_ids = []
+    swiped_ids = set()
+    
+    if pet_id:
+        pet_result = await db.execute(
+            select(PetProfile).where(
+                PetProfile.id == pet_id,
+                PetProfile.user_id == current_user.id,
+                PetProfile.is_active.is_(True),
+            )
         )
-    )
-    my_pet = pet_result.scalar_one_or_none()
-    if my_pet is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Pet not found or inactive",
+        my_pet = pet_result.scalar_one_or_none()
+        if my_pet is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Pet not found or inactive",
+            )
+        
+        # 4. Collect all pet IDs owned by the current user (for exclusion)
+        own_pets_result = await db.execute(
+            select(PetProfile.id).where(PetProfile.user_id == current_user.id)
         )
+        own_pet_ids = [row[0] for row in own_pets_result.all()]
 
-    # 2. Require the user's own coordinates
-    if current_user.latitude is None or current_user.longitude is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Location not set. Please update your profile with coordinates before using distance-based filtering",
+        # 5. Collect all pet IDs this pet has already swiped on
+        swiped_result = await db.execute(
+            select(Swipe.target_pet_id).where(Swipe.swiper_pet_id == pet_id)
         )
+        swiped_ids = {row[0] for row in swiped_result.all()}
 
+    # 2. User location is optional now
     user_lat = current_user.latitude
     user_lng = current_user.longitude
-
-    # 4. Collect all pet IDs owned by the current user (for exclusion)
-    own_pets_result = await db.execute(
-        select(PetProfile.id).where(PetProfile.user_id == current_user.id)
-    )
-    own_pet_ids = [row[0] for row in own_pets_result.all()]
-
-    # 5. Collect all pet IDs this pet has already swiped on
-    swiped_result = await db.execute(
-        select(Swipe.target_pet_id).where(Swipe.swiper_pet_id == pet_id)
-    )
-    swiped_ids = {row[0] for row in swiped_result.all()}
+    has_location = user_lat is not None and user_lng is not None
 
     # 6. Build candidate query
     filters = [
         PetProfile.is_active.is_(True),
-        PetProfile.user_id != current_user.id,
     ]
+    
+    # Only exclude own pets if pet_id was provided
+    if pet_id:
+        filters.append(PetProfile.user_id != current_user.id)
 
     if swiped_ids:
         filters.append(PetProfile.id.notin_(swiped_ids))
 
     if species is not None:
         filters.append(PetProfile.species == species)
+
+    if breed is not None:
+        filters.append(PetProfile.breed.ilike(f"%{breed}%"))
 
     if age_min is not None:
         filters.append(PetProfile.age_months >= age_min)
@@ -1039,6 +1049,15 @@ async def browse_pets(
     if gender is not None:
         filters.append(PetProfile.gender == gender)
 
+    if is_vaccinated is not None:
+        filters.append(PetProfile.is_vaccinated == is_vaccinated)
+
+    if is_neutered is not None:
+        filters.append(PetProfile.is_neutered == is_neutered)
+
+    if is_trained is not None:
+        filters.append(PetProfile.is_trained == is_trained)
+
     candidates_result = await db.execute(
         select(PetProfile).where(*filters).limit(50)
     )
@@ -1048,9 +1067,13 @@ async def browse_pets(
         filters_applied = {
             "radius_km": radius,
             "species": species,
+            "breed": breed,
             "age_min": age_min,
             "age_max": age_max,
             "gender": gender,
+            "is_vaccinated": is_vaccinated,
+            "is_neutered": is_neutered,
+            "is_trained": is_trained,
         }
         return BrowsePetsResponse(candidates=[], total=0, filters_applied=filters_applied)
 
@@ -1060,17 +1083,26 @@ async def browse_pets(
     owners_map: dict = {u.id: u for u in owners_result.scalars().all()}
 
     nearby: list[tuple[PetProfile, float]] = []
-    for pet in candidates:
-        owner = owners_map.get(pet.user_id)
-        if owner is None or owner.latitude is None or owner.longitude is None:
-            # Skip candidates whose owner has no location set
-            continue
-        dist = haversine_distance(user_lat, user_lng, owner.latitude, owner.longitude)
-        if dist <= radius:
-            nearby.append((pet, dist))
-
-    # 8. Sort by distance ascending
-    nearby.sort(key=lambda x: x[1])
+    
+    if has_location:
+        # Calculate distances only if user has location
+        for pet in candidates:
+            owner = owners_map.get(pet.user_id)
+            if owner is None or owner.latitude is None or owner.longitude is None:
+                # Skip candidates whose owner has no location set
+                continue
+            dist = haversine_distance(user_lat, user_lng, owner.latitude, owner.longitude)
+            if dist <= radius:
+                nearby.append((pet, dist))
+        # Sort by distance ascending
+        nearby.sort(key=lambda x: x[1])
+    else:
+        # No location set, return all candidates with distance = 0
+        for pet in candidates:
+            owner = owners_map.get(pet.user_id)
+            if owner is None:
+                continue
+            nearby.append((pet, 0.0))
 
     # Apply limit after distance filtering
     nearby = nearby[:limit]
@@ -1094,9 +1126,13 @@ async def browse_pets(
     filters_applied = {
         "radius_km": radius,
         "species": species,
+        "breed": breed,
         "age_min": age_min,
         "age_max": age_max,
         "gender": gender,
+        "is_vaccinated": is_vaccinated,
+        "is_neutered": is_neutered,
+        "is_trained": is_trained,
     }
 
     # 11. Return response
@@ -1105,3 +1141,24 @@ async def browse_pets(
         total=len(response_candidates),
         filters_applied=filters_applied,
     )
+
+
+@router.get("/breeds", response_model=list[str])
+async def get_all_breeds(
+    species: str | None = Query(default=None, description="Filter breeds by species"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get all unique breeds registered in the application.
+    Optionally filter by species to get breed list for a specific animal type.
+    Returns breeds sorted alphabetically.
+    """
+    query = select(PetProfile.breed).where(PetProfile.is_active.is_(True)).distinct()
+    
+    if species:
+        query = query.where(PetProfile.species == species)
+    
+    result = await db.execute(query.order_by(PetProfile.breed))
+    breeds = [row[0] for row in result.all()]
+    
+    return breeds
