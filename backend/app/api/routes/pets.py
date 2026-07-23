@@ -4,6 +4,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_current_user_optional, get_owned_pet
 from app.core.database import get_db
@@ -53,6 +54,7 @@ async def browse_pets(
 
     result = await db.execute(
         select(PetProfile)
+        .options(selectinload(PetProfile.user))
         .where(*filters)
         .order_by(PetProfile.created_at.desc())
         .limit(limit)
@@ -61,17 +63,8 @@ async def browse_pets(
 
     pets = result.scalars().all()
     
-    # Fetch owner info for all pets
-    user_ids = [p.user_id for p in pets]
-    users_result = await db.execute(select(User).where(User.id.in_(user_ids)))
-    users_map = {u.id: u for u in users_result.scalars().all()}
-    
-    # Build response with owner info
-    items = []
-    for pet in pets:
-        # Attach owner to pet object
-        pet.owner = users_map.get(pet.user_id)
-        items.append(PetPublicResponse.model_validate(pet))
+    # Build response with owner info (already loaded via selectinload)
+    items = [PetPublicResponse.model_validate(pet) for pet in pets]
 
     return PetListResponse(
         items=items,
