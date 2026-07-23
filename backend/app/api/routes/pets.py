@@ -69,11 +69,16 @@ async def browse_pets(
     # Build response with owner info
     items = []
     for pet in pets:
-        pet_dict = PetPublicResponse.model_validate(pet).model_dump()
-        pet_dict["owner"] = users_map.get(pet.user_id)
-        items.append(PetPublicResponse.model_validate(pet_dict))
+        # Attach owner to pet object
+        pet.owner = users_map.get(pet.user_id)
+        items.append(PetPublicResponse.model_validate(pet))
 
     return PetListResponse(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
         items=items,
         total=total,
         limit=limit,
