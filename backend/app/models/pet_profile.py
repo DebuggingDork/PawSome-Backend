@@ -80,3 +80,13 @@ class PetProfile(Base):
         if primary is not None:
             return primary.url
         return self.photos[0].url if self.photos else None
+
+    @property
+    def owner(self) -> "User":
+        """Alias for user relationship to match schema expectations"""
+        return self.user
+    
+    @owner.setter
+    def owner(self, value: "User") -> None:
+        """Allow setting owner to set the user relationship"""
+        self.user = value
