@@ -22,10 +22,12 @@ from app.core.database import get_db
 from fastapi import Depends
 from app.models.user import User
 from app.schemas.auth import (
+    ForgotPasswordRequest,
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
     ResendVerificationRequest,
+    ResetPasswordRequest,
     TokenResponse,
     UserResponse,
     VerifyEmailRequest,
@@ -207,6 +209,57 @@ async def verify_email(
     await achievements.grant_achievement(db, user.id, AchievementType.VERIFIED_EMAIL)
     
     return user
+
+
+@router.post("/forgot-password", status_code=status.HTTP_200_OK)
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Send a password reset link if the email is registered.
+
+    Always returns the same generic message so the endpoint can't be used
+    to enumerate which emails have accounts.
+    """
+    result = await db.execute(select(User).where(func.lower(User.email) == body.email))
+    user = result.scalar_one_or_none()
+
+    if user:
+        token = await email_service.generate_password_reset_token(redis, str(user.id))
+        email_service.send_password_reset_email(user.email, token)
+
+    return {"message": "If the email exists, a password reset link has been sent"}
+
+
+@router.post("/reset-password", status_code=status.HTTP_200_OK)
+async def reset_password(
+    body: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Set a new password using a token from the forgot-password email"""
+    user_id = await email_service.verify_password_reset_token(redis, body.token)
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    user.password_hash = hash_password(body.new_password)
+    await db.commit()
+
+    return {"message": "Password has been reset successfully"}
 
 
 @router.post("/resend-verification", status_code=status.HTTP_200_OK)

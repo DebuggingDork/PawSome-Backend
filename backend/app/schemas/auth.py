@@ -114,6 +114,20 @@ class ResendVerificationRequest(BaseModel):
         return v.strip().lower()
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr = Field(description="Email address to send the password reset link to")
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=1, description="Password reset token from email")
+    new_password: str = Field(min_length=8, max_length=128, description="New password, at least 8 characters long")
+
+
 class ProfileCompletionStatus(BaseModel):
     """Profile completion tracking for gamified onboarding"""
     completion_percentage: int = Field(ge=0, le=100, description="Overall profile completion (0-100)")

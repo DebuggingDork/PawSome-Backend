@@ -244,6 +244,55 @@ Request new verification email.
 
 ---
 
+### Forgot Password
+
+**POST** `/auth/forgot-password`
+
+Send a password reset link to the given email if an account exists. Always returns the same generic message, whether or not the email is registered, to avoid leaking which emails have accounts.
+
+**Request Body:**
+```json
+{
+  "email": "john@example.com"
+}
+```
+
+**Response:** `200 OK`
+```json
+{
+  "message": "If the email exists, a password reset link has been sent"
+}
+```
+
+---
+
+### Reset Password
+
+**POST** `/auth/reset-password`
+
+Set a new password using the single-use token from the forgot-password email. The token expires after 30 minutes.
+
+**Request Body:**
+```json
+{
+  "token": "AbCdEf123456...",
+  "new_password": "newSecurePassword123"
+}
+```
+
+**Response:** `200 OK`
+```json
+{
+  "message": "Password has been reset successfully"
+}
+```
+
+**Errors:**
+- `400`: Invalid or expired reset token
+- `404`: User not found
+
+---
+
 ## Users
 
 ### Get My Full Profile
