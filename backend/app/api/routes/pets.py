@@ -72,11 +72,6 @@ async def browse_pets(
         limit=limit,
         offset=offset,
     )
-        items=items,
-        total=total,
-        limit=limit,
-        offset=offset,
-    )
 
 
 @router.post("", response_model=PetResponse, status_code=status.HTTP_201_CREATED)
