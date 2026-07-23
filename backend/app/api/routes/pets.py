@@ -110,11 +110,8 @@ async def create_pet(
     from app.services import achievements
     await achievements.grant_achievement(db, user.id, AchievementType.PET_CREATED)
 
-    # Return pet with owner info to match PetResponse schema
-    pet.owner = user
-    pet_dict = PetResponse.model_validate(pet).model_dump()
-    pet_dict["owner"] = user
-    return PetResponse.model_validate(pet_dict)
+    # Return pet with owner info (owner property alias returns the user)
+    return PetResponse.model_validate(pet)
 
 
 @router.get("/me", response_model=list[PetResponse])
@@ -132,15 +129,8 @@ async def list_my_pets(
     )
     pets = result.scalars().all()
     
-    # Add owner info to each pet
-    response = []
-    for pet in pets:
-        pet.owner = user
-        pet_dict = PetResponse.model_validate(pet).model_dump()
-        pet_dict["owner"] = user
-        response.append(PetResponse.model_validate(pet_dict))
-    
-    return response
+    # Add owner info to each pet (owner property alias returns the user)
+    return [PetResponse.model_validate(pet) for pet in pets]
 
 
 @router.get("/{pet_id}", response_model=PetResponse | PetPublicResponse)
@@ -153,7 +143,9 @@ async def get_pet(
     page). The owner, when logged in, gets full data including coordinates;
     everyone else gets the public view with owner info."""
     result = await db.execute(
-        select(PetProfile).where(
+        select(PetProfile)
+        .options(selectinload(PetProfile.user))
+        .where(
             PetProfile.id == pet_id,
             PetProfile.is_active.is_(True),
         )
@@ -167,15 +159,11 @@ async def get_pet(
         )
 
     if user is not None and pet.user_id == user.id:
-        # Owner's view - include owner info
-        pet_dict = PetResponse.model_validate(pet).model_dump()
-        pet_dict["owner"] = user
-        return PetResponse.model_validate(pet_dict)
+        # Owner's view - full data with owner info
+        return PetResponse.model_validate(pet)
     
-    # Public view - include owner info
-    pet_dict = PetPublicResponse.model_validate(pet).model_dump()
-    pet_dict["owner"] = pet.user
-    return PetPublicResponse.model_validate(pet_dict)
+    # Public view - includes owner info via owner property
+    return PetPublicResponse.model_validate(pet)
 
 
 @router.patch("/{pet_id}", response_model=PetResponse)
@@ -192,10 +180,8 @@ async def update_pet(
     await db.commit()
     await db.refresh(pet)
 
-    # Return pet with owner info
-    pet_dict = PetResponse.model_validate(pet).model_dump()
-    pet_dict["owner"] = user
-    return PetResponse.model_validate(pet_dict)
+    # Return pet with owner info (owner property alias returns the user)
+    return PetResponse.model_validate(pet)
 
 
 @router.delete("/{pet_id}", status_code=status.HTTP_204_NO_CONTENT)
