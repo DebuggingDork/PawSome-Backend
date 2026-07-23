@@ -1,0 +1,49 @@
+╔══════════════════════════════════════════════════════════════╗
+║                  🔄 RESTART REQUIRED                         ║
+╚══════════════════════════════════════════════════════════════╝
+
+✅ CORS CONFIGURATION FIXED!
+
+The CORS port mismatch has been resolved:
+  - Backend CORS now allows: http://localhost:5174
+  - Frontend configured to run on: http://localhost:5174
+  - Files updated and pushed to GitHub ✅
+
+⚠️  YOU MUST RESTART THE BACKEND SERVER FOR THIS TO TAKE EFFECT!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔧 HOW TO RESTART:
+
+1. Stop the backend server (press Ctrl+C in the backend terminal)
+
+2. Start it again:
+   cd backend
+   uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+3. Look for this line in the output:
+   🔒 CORS enabled for origins: ['http://localhost:5174']
+                                          ↑↑↑↑
+                                    Must say 5174!
+
+4. Refresh your browser at http://localhost:5174
+
+5. Try login/register again - CORS error should be gone!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OR use the quick start script:
+  - Close all terminal windows
+  - Double-click: START_BOTH.bat
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 What was fixed:
+  ✅ backend/.env → CORS_ORIGINS=http://localhost:5174
+  ✅ backend/.env.example → Updated docs
+  ✅ frontend/vite.config.ts → Locked port to 5174
+  ✅ Both repos pushed to GitHub
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After restarting, the CORS error will be gone! 🎉
