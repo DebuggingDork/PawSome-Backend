@@ -129,13 +129,12 @@ async def list_my_pets(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List the current user's active pets. An empty list means onboarding was skipped."""
+    """List the current user's pets, active or not. An empty list means onboarding was skipped.
+    Includes inactive pets (not yet photographed) since this is the owner's own management view,
+    not the public browse catalog."""
     result = await db.execute(
         select(PetProfile)
-        .where(
-            PetProfile.user_id == user.id,
-            PetProfile.is_active.is_(True),
-        )
+        .where(PetProfile.user_id == user.id)
         .order_by(PetProfile.created_at)
     )
     pets = result.scalars().all()
