@@ -1,15 +1,27 @@
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128, description="Password must be at least 8 characters long")
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        # Emails are case-insensitive; without this, "User@x.com" at signup and
+        # "user@x.com" at login are treated as different accounts and login fails.
+        return v.strip().lower()
+
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str 
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
 
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(description="Refresh token")
@@ -95,6 +107,11 @@ class VerifyEmailRequest(BaseModel):
 
 class ResendVerificationRequest(BaseModel):
     email: EmailStr = Field(description="Email address to resend verification to")
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
 
 
 class ProfileCompletionStatus(BaseModel):

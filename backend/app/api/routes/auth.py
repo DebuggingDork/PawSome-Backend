@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from app.api.deps import get_current_user
 from fastapi import status
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from app.core.redis import get_redis
 from app.core.security import (
     TOKEN_TYPE_REFRESH,
@@ -63,7 +63,7 @@ async def register(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
-    existing = await db.execute(select(User).where(User.email == body.email))
+    existing = await db.execute(select(User).where(func.lower(User.email) == body.email))
     if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -90,7 +90,7 @@ async def register(
 
 @router.post("/login", response_model=TokenResponse, status_code=status.HTTP_200_OK)
 async def login(body: LoginRequest , db :AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == body.email))
+    result = await db.execute(select(User).where(func.lower(User.email) == body.email))
     user = result.scalar_one_or_none()
 
     if user is None or not verify_password(body.password, user.password_hash):
@@ -217,10 +217,10 @@ async def resend_verification(
 ):
     """Resend verification email"""
     result = await db.execute(
-        select(User).where(User.email == body.email)
+        select(User).where(func.lower(User.email) == body.email)
     )
     user = result.scalar_one_or_none()
-    
+
     if not user:
         # Don't reveal if email exists for security
         return {"message": "If the email exists, a verification link has been sent"}
