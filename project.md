@@ -11,8 +11,8 @@
 > codebase, then check Section 9 for what comes next. **Update Section 8 after every
 > completed feature** so this file always reflects reality.
 
-**Last updated:** 2026-06-13
-**Current phase:** Phase 4 — Swipe, Match & Notifications (DONE ✅) → Next: WebSocket Chat / Explore Feed
+**Last updated:** 2026-07-25
+**Current phase:** Phase 7 — Differentiators (Super-Woof, Playdates, Events DONE ✅) → Next: AI bio generation / Stripe premium
 
 ---
 
@@ -423,6 +423,7 @@ PawSome/
 | 23 | **Swipe, Match & Notification models** | `app/models/swipe.py`, `app/models/match.py`, `app/models/notification.py` | Three new models for matching system. Swipe records every like/skip with species validation. Match created on mutual like. Notifications sent to both users on match. Migration `08edcca036c1` creates all three tables with proper indexes and constraints. |
 | 24 | **Matching API routes** | `app/api/routes/matches.py` | `POST /matches/swipe` (validates species match, detects mutual likes, creates match + notifications), `GET /matches/my-matches` (list user's matches), `GET /matches/likes-received` (see who liked your pet), `GET /matches/notifications` (get notifications with pet details), `PATCH /matches/notifications/read` (mark as read), `GET /matches/swipe-history` (view your swipe history). All routes enforce species matching (dog-to-dog only, etc.). Router registered in `main.py`. |
 | 25 | **Match schemas** | `app/schemas/match.py` | Request/response schemas for swipe actions, matches, and notifications. Includes detailed notification responses with pet info for UI display. |
+| 26 | **Super Woof, Playdate Scheduler, Community Events** | `app/models/playdate.py`, `app/models/event.py`, `app/api/routes/playdates.py`, `app/api/routes/events.py`, migration `bcb4de2a550a` | Super Woof: `super_like` swipe action, 1/day Redis rate limit, `notifications.is_super` flag surfaces it at the top of "likes you". Playdates: match-scoped meetup proposals (`/matches/{match_id}/playdates`) with accept/decline/cancel, pushed as `PLAYDATE_PROPOSED`/`PLAYDATE_RESPONSE` notifications. Events: standalone community meetup board (`/events`) with RSVPs, not tied to a match. Frontend: Super Woof button + badge in Discover/SwipeDeck, a Playdates panel in Chat, and a new `/events` page. *(Note: rows 1–25 predate several already-shipped features — favorites, blocks/reports, chat reactions/search, achievements, live WS notifications, match scoring, health badges — that were never backfilled into this table; see git log for the full history.)* |
 
 ### 8.3 How to run the backend (current)
 
@@ -489,8 +490,13 @@ uv run fastapi dev           # start dev server → http://localhost:8000/docs
 - [ ] Onboarding (pet profile setup), Explore (swipe cards), Matches, Chat, Profile pages
 
 ### Phase 7 — Differentiators & Premium
-- [ ] AI bio generation (OpenAI), Block/Report, notifications (FCM + Resend via Celery),
-      Super-Woof, Boost, Compatibility score, Playdate scheduler, Stripe subscriptions
+- [x] Super-Woof (1/day priority like, star badge in "likes you")
+- [x] Playdate scheduler (propose/accept/decline/cancel a real-world meetup per match)
+- [x] Community Events board (post a local meetup, RSVP, attendee list) — new, not in original spec
+- [ ] AI bio generation (OpenAI), notifications (FCM + Resend via Celery),
+      Boost, Stripe subscriptions
+- [x] Compatibility score (see row 6/`match_scoring.py`, wired into `/matches/browse`)
+- [x] Block/Report (see `blocks.py`/`reports.py`)
 
 ### Phase 8 — DevOps & Hardening
 - [ ] Dockerfile + docker-compose, GitHub Actions CI, tests (pytest), Sentry,
