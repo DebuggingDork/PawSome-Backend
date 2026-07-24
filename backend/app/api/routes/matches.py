@@ -561,7 +561,28 @@ async def mark_notifications_read(
     for notif in notifications:
         notif.is_read = True
         notif.read_at = now
-    
+
+    await db.commit()
+
+
+@router.post("/notifications/read-all", status_code=status.HTTP_204_NO_CONTENT)
+async def mark_all_notifications_read(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark every unread notification read in one go, without the caller
+    needing to first fetch and pass every id."""
+    result = await db.execute(
+        select(Notification).where(
+            Notification.user_id == user.id,
+            Notification.is_read.is_(False),
+        )
+    )
+    now = datetime.now()
+    for notif in result.scalars().all():
+        notif.is_read = True
+        notif.read_at = now
+
     await db.commit()
 
 
