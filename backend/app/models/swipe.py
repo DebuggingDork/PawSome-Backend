@@ -12,6 +12,7 @@ from app.core.database import Base
 class SwipeAction(str, enum.Enum):
     LIKE = "like"  # Right swipe
     SKIP = "skip"  # Left swipe
+    SUPER_LIKE = "super_like"  # Super Woof — limited-use priority like
 
 
 class Swipe(Base):
