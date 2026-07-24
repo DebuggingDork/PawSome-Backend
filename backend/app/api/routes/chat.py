@@ -186,6 +186,10 @@ async def websocket_chat(
                                 "content": new_message.content,
                                 "msg_type": new_message.msg_type,
                                 "created_at": new_message.created_at.isoformat(),
+                                # Match MessageResponse shape so clients don't crash
+                                # when rendering live messages (reactions/is_read).
+                                "is_read": False,
+                                "reactions": [],
                             }
                         }
                         await manager.broadcast_message(match_id, broadcast_data)
