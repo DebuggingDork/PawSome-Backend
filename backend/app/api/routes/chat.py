@@ -17,6 +17,8 @@ from app.models.pet_profile import PetProfile
 from app.models.user import User
 from app.schemas.chat import (
     ChatHistoryResponse,
+    ChatSearchResponse,
+    ChatSearchResultItem,
     CreateReactionRequest,
     MarkReadRequest,
     MessageResponse,
@@ -312,6 +314,36 @@ async def get_chat_history(
         total=total,
         has_more=len(messages) == limit,
         unread_count=unread_count,
+    )
+
+
+@router.get("/{match_id}/search", response_model=ChatSearchResponse)
+async def search_messages(
+    match_id: uuid.UUID,
+    q: str = Query(..., min_length=1, max_length=200, description="Text to search for"),
+    limit: int = Query(default=30, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search this conversation's messages by content (case-insensitive substring)."""
+    await verify_match_access(match_id, user, db)
+
+    result = await db.execute(
+        select(Message)
+        .where(
+            Message.match_id == match_id,
+            Message.is_deleted.is_(False),
+            Message.content.ilike(f"%{q}%"),
+        )
+        .order_by(desc(Message.created_at))
+        .limit(limit)
+    )
+    messages = result.scalars().all()
+
+    return ChatSearchResponse(
+        results=[ChatSearchResultItem(message=MessageResponse.model_validate(m)) for m in messages],
+        total=len(messages),
+        query=q,
     )
 
 
