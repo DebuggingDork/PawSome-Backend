@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -28,6 +28,10 @@ class PetCreate(BaseModel):
     bio: str | None = Field(default=None, max_length=2000)
     lat: float = Field(ge=-90, le=90)
     lng: float = Field(ge=-180, le=180)
+    is_vaccinated: bool = False
+    vaccination_date: date | None = None
+    is_neutered: bool = False
+    is_trained: bool = False
 
 
 class PetUpdate(BaseModel):
@@ -39,6 +43,10 @@ class PetUpdate(BaseModel):
     bio: str | None = Field(default=None, max_length=2000)
     lat: float | None = Field(default=None, ge=-90, le=90)
     lng: float | None = Field(default=None, ge=-180, le=180)
+    is_vaccinated: bool | None = None
+    vaccination_date: date | None = None
+    is_neutered: bool | None = None
+    is_trained: bool | None = None
 
 
 class PetPhotoResponse(BaseModel):
@@ -81,6 +89,10 @@ class PetPublicResponse(BaseModel):
     primary_photo_url: str | None
     photos: list[PetPhotoResponse]
     owner: PetOwnerBasicInfo | None  # Only populated for authenticated requests
+    is_vaccinated: bool
+    vaccination_date: date | None
+    is_neutered: bool
+    is_trained: bool
 
     model_config = {
         "from_attributes": True,
