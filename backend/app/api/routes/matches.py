@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core.rate_limit import undo_rate_limit
+from app.core.rate_limit import check_rate_limit, undo_rate_limit
 from app.core.redis import get_redis
 from app.models.favorite import Favorite
 from app.models.block import Block
@@ -27,6 +27,7 @@ from app.schemas.match import (
     MatchResponse,
     NotificationResponse,
     NotificationWithDetails,
+    SuperWoofStatus,
     SwipeRequest,
     SwipeResponse,
 )
@@ -48,6 +49,10 @@ router = APIRouter(
     tags=["matches"],
 )
 
+# Super Woof — one free priority like per user per rolling 24h window.
+SUPER_WOOF_LIMIT = 1
+SUPER_WOOF_WINDOW_SECONDS = 86400
+
 
 async def _push_notification(notification: Notification, other_pet: PetProfile) -> None:
     """Push a just-created Notification to its recipient over the live WS, if
@@ -62,6 +67,7 @@ async def _push_notification(notification: Notification, other_pet: PetProfile) 
                 "notification_type": notification.notification_type.value,
                 "message": notification.message,
                 "is_read": notification.is_read,
+                "is_super": notification.is_super,
                 "created_at": notification.created_at.isoformat(),
                 "match_id": str(notification.match_id) if notification.match_id else None,
                 "other_pet": {
@@ -120,20 +126,32 @@ async def swipe_on_pet(
     body: SwipeRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
     """
-    Swipe on a pet (like or skip).
+    Swipe on a pet (like, skip, or super_like).
     - Right swipe (like): Sends notification to target pet owner, they must accept/reject
+    - Super Woof (super_like): Same as like, but limited to 1/day and surfaces at
+      the top of the target's "likes you" list with a star badge
     - Left swipe (skip): No notification sent
-    
+
     Validates:
     - Both pets exist and are active
     - Swiper pet belongs to current user
     - Same species (dogs can only match with dogs, etc.)
     - Not swiping on your own pet
     - Haven't already swiped on this pet
+    - Super Woof: caller hasn't used today's allowance
     """
-    
+    if body.action == "super_like":
+        await check_rate_limit(
+            redis=redis,
+            user_id=str(user.id),
+            key_prefix="super_woof",
+            limit=SUPER_WOOF_LIMIT,
+            window=SUPER_WOOF_WINDOW_SECONDS,
+        )
+
     # Verify the swiper pet belongs to the user
     swiper_result = await db.execute(
         select(PetProfile).where(
@@ -193,16 +211,22 @@ async def swipe_on_pet(
         )
     
     # Create the swipe
+    action_map = {
+        "like": SwipeAction.LIKE,
+        "skip": SwipeAction.SKIP,
+        "super_like": SwipeAction.SUPER_LIKE,
+    }
+    is_super = body.action == "super_like"
     swipe = Swipe(
         swiper_pet_id=body.pet_id,
         target_pet_id=body.target_pet_id,
-        action=SwipeAction.LIKE if body.action == "like" else SwipeAction.SKIP,
+        action=action_map[body.action],
     )
     db.add(swipe)
-    
-    # If it's a LIKE, send notification to target pet owner (no auto-match)
+
+    # If it's a LIKE or SUPER_LIKE, send notification to target pet owner (no auto-match)
     notification_target: Notification | None = None
-    if body.action == "like":
+    if body.action in ("like", "super_like"):
         # Send "NEW_LIKE" notification to target pet owner
         notification_target = Notification(
             user_id=target_pet.user_id,
@@ -210,7 +234,12 @@ async def swipe_on_pet(
             pet_id=body.target_pet_id,
             related_pet_id=body.pet_id,
             match_id=None,  # No match yet
-            message=f"{swiper_pet.name} is interested in {target_pet.name}!",
+            message=(
+                f"🌟 {swiper_pet.name} Super Woofed {target_pet.name}!"
+                if is_super
+                else f"{swiper_pet.name} is interested in {target_pet.name}!"
+            ),
+            is_super=is_super,
         )
         db.add(notification_target)
 
@@ -241,6 +270,22 @@ async def swipe_on_pet(
         is_match=False,  # No auto-match anymore
         match_id=None,
         created_at=swipe.created_at,
+    )
+
+
+@router.get("/super-woof/remaining", response_model=SuperWoofStatus)
+async def get_super_woof_remaining(
+    user: User = Depends(get_current_user),
+    redis: Redis = Depends(get_redis),
+):
+    """How many Super Woofs the caller has left today, for the Discover button state."""
+    key = f"rate_limit:super_woof:{user.id}"
+    used_raw = await redis.get(key)
+    used = int(used_raw) if used_raw else 0
+    return SuperWoofStatus(
+        remaining=max(0, SUPER_WOOF_LIMIT - used),
+        limit=SUPER_WOOF_LIMIT,
+        window_seconds=SUPER_WOOF_WINDOW_SECONDS,
     )
 
 
@@ -403,12 +448,12 @@ async def get_likes_received(
             detail="Your pet not found or inactive",
         )
     
-    # Find pets that liked us
+    # Find pets that liked us (ordinary like or Super Woof)
     likes_result = await db.execute(
         select(Swipe.swiper_pet_id)
         .where(
             Swipe.target_pet_id == pet_id,
-            Swipe.action == SwipeAction.LIKE,
+            Swipe.action.in_([SwipeAction.LIKE, SwipeAction.SUPER_LIKE]),
         )
     )
     liker_pet_ids = [row[0] for row in likes_result.all()]
@@ -515,6 +560,7 @@ async def get_notifications(
                 notification_type=notif.notification_type.value,
                 message=notif.message,
                 is_read=notif.is_read,
+                is_super=notif.is_super,
                 created_at=notif.created_at,
                 read_at=notif.read_at,
                 your_pet={

@@ -9,7 +9,7 @@ class SwipeRequest(BaseModel):
     """Request to swipe on a pet"""
     pet_id: UUID  # Your pet doing the swiping
     target_pet_id: UUID  # The pet you're swiping on
-    action: Literal["like", "skip"]
+    action: Literal["like", "skip", "super_like"]
 
 
 class SwipeResponse(BaseModel):
@@ -70,6 +70,7 @@ class NotificationWithDetails(BaseModel):
     notification_type: str
     message: str
     is_read: bool
+    is_super: bool = False
     created_at: datetime
     read_at: datetime | None
     your_pet: dict  # Basic pet info
@@ -80,3 +81,10 @@ class NotificationWithDetails(BaseModel):
 class MarkNotificationReadRequest(BaseModel):
     """Mark notifications as read"""
     notification_ids: list[UUID]
+
+
+class SuperWoofStatus(BaseModel):
+    """How many Super Woofs the caller has left in the current 24h window"""
+    remaining: int
+    limit: int
+    window_seconds: int
