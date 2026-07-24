@@ -26,10 +26,10 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket, match_id: str, pet_id: str):
         """Accept WebSocket connection and store it"""
         await websocket.accept()
-        
+
         if match_id not in self.active_connections:
             self.active_connections[match_id] = {}
-        
+
         self.active_connections[match_id][pet_id] = websocket
         
         # Set online status in Redis
@@ -51,13 +51,13 @@ class ConnectionManager:
         """Send message to all connected users in a match (local instance only)"""
         if match_id not in self.active_connections:
             return
-        
+
         message_text = json.dumps(message)
-        
+
         for pet_id, websocket in list(self.active_connections[match_id].items()):
             if exclude_pet and pet_id == exclude_pet:
                 continue
-            
+
             try:
                 await websocket.send_text(message_text)
             except Exception:
@@ -73,27 +73,35 @@ class ConnectionManager:
             )
     
     async def _listen_to_redis(self):
-        """Listen to Redis pub/sub for messages from other instances"""
+        """Listen to Redis pub/sub for messages from other instances.
+
+        Reconnects on any non-cancellation error instead of letting the task
+        die silently — a dropped pub/sub connection (idle timeout, brief
+        network blip) used to kill this loop for good, breaking realtime
+        message delivery for every match until the process was restarted,
+        even though messages kept saving fine via the REST/WS handlers."""
         if not self.redis_client:
             return
-        
-        pubsub = self.redis_client.pubsub()
-        
-        # Subscribe to pattern for all match channels
-        await pubsub.psubscribe("chat:*")
-        
-        try:
-            async for message in pubsub.listen():
-                if message["type"] == "pmessage":
-                    channel = message["channel"].decode() if isinstance(message["channel"], bytes) else message["channel"]
-                    match_id = channel.replace("chat:", "")
-                    data = json.loads(message["data"])
-                    
-                    # Send to local connections
-                    await self.send_to_match(match_id, data)
-        except asyncio.CancelledError:
-            await pubsub.punsubscribe("chat:*")
-            await pubsub.close()
+
+        while True:
+            pubsub = self.redis_client.pubsub()
+            try:
+                await pubsub.psubscribe("chat:*")
+                async for message in pubsub.listen():
+                    if message["type"] == "pmessage":
+                        channel = message["channel"].decode() if isinstance(message["channel"], bytes) else message["channel"]
+                        match_id = channel.replace("chat:", "")
+                        data = json.loads(message["data"])
+
+                        # Send to local connections
+                        await self.send_to_match(match_id, data)
+            except asyncio.CancelledError:
+                await pubsub.punsubscribe("chat:*")
+                await pubsub.close()
+                return
+            except Exception:
+                await pubsub.close()
+                await asyncio.sleep(1)  # brief backoff, then resubscribe
     
     async def is_pet_online(self, pet_id: str) -> bool:
         """Check if a pet is online (any instance)"""
