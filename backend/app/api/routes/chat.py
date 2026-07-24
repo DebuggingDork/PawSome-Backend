@@ -12,12 +12,15 @@ from app.core.redis import get_redis
 from app.models.chat_participant import ChatParticipant
 from app.models.match import Match
 from app.models.message import Message
+from app.models.message_reaction import MessageReaction
 from app.models.pet_profile import PetProfile
 from app.models.user import User
 from app.schemas.chat import (
     ChatHistoryResponse,
+    CreateReactionRequest,
     MarkReadRequest,
     MessageResponse,
+    ReactionResponse,
     ReadReceiptResponse,
 )
 from app.services.chat_manager import manager
@@ -439,4 +442,101 @@ async def get_read_receipts(
         your_last_read=your_participant.last_read_message_id,
         other_last_read=other_participant.last_read_message_id if other_participant else None,
         unread_count=unread_count,
+    )
+
+
+async def _get_match_message(match_id: uuid.UUID, message_id: uuid.UUID, db: AsyncSession) -> Message:
+    result = await db.execute(
+        select(Message).where(Message.id == message_id, Message.match_id == match_id)
+    )
+    message = result.scalar_one_or_none()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found in this match")
+    return message
+
+
+@router.post(
+    "/{match_id}/messages/{message_id}/reactions",
+    response_model=ReactionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_reaction(
+    match_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: CreateReactionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """React to a message with an emoji. One reaction per user per message —
+    reacting again replaces the previous emoji (matches the unique constraint
+    on message_reactions)."""
+    await verify_match_access(match_id, user, db)
+    await _get_match_message(match_id, message_id, db)
+
+    existing_result = await db.execute(
+        select(MessageReaction).where(
+            MessageReaction.message_id == message_id,
+            MessageReaction.user_id == user.id,
+        )
+    )
+    reaction = existing_result.scalar_one_or_none()
+    if reaction:
+        reaction.emoji = body.emoji
+    else:
+        reaction = MessageReaction(message_id=message_id, user_id=user.id, emoji=body.emoji)
+        db.add(reaction)
+
+    await db.commit()
+    await db.refresh(reaction)
+
+    await manager.broadcast_message(
+        str(match_id),
+        {
+            "type": "reaction",
+            "data": {
+                "message_id": str(message_id),
+                "user_id": str(user.id),
+                "emoji": reaction.emoji,
+            },
+        },
+    )
+
+    return ReactionResponse.model_validate(reaction)
+
+
+@router.delete(
+    "/{match_id}/messages/{message_id}/reactions",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def remove_reaction(
+    match_id: uuid.UUID,
+    message_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove the current user's reaction from a message, if any."""
+    await verify_match_access(match_id, user, db)
+
+    result = await db.execute(
+        select(MessageReaction).where(
+            MessageReaction.message_id == message_id,
+            MessageReaction.user_id == user.id,
+        )
+    )
+    reaction = result.scalar_one_or_none()
+    if not reaction:
+        raise HTTPException(status_code=404, detail="No reaction to remove")
+
+    await db.delete(reaction)
+    await db.commit()
+
+    await manager.broadcast_message(
+        str(match_id),
+        {
+            "type": "reaction_removed",
+            "data": {
+                "message_id": str(message_id),
+                "user_id": str(user.id),
+            },
+        },
     )
