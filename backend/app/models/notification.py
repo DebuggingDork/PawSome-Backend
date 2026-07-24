@@ -12,6 +12,7 @@ from app.core.database import Base
 class NotificationType(str, enum.Enum):
     NEW_MATCH = "new_match"  # When two pets match
     NEW_LIKE = "new_like"  # When someone likes your pet (optional - could be noisy)
+    NEW_MESSAGE = "new_message"  # A chat message arrived while you weren't in that conversation
 
 
 class Notification(Base):

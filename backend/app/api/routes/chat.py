@@ -13,6 +13,7 @@ from app.models.chat_participant import ChatParticipant
 from app.models.match import Match
 from app.models.message import Message
 from app.models.message_reaction import MessageReaction
+from app.models.notification import Notification, NotificationType
 from app.models.pet_profile import PetProfile
 from app.models.user import User
 from app.schemas.chat import (
@@ -26,6 +27,7 @@ from app.schemas.chat import (
     ReadReceiptResponse,
 )
 from app.services.chat_manager import manager
+from app.services.notification_manager import manager as notification_manager
 
 router = APIRouter(
     prefix="/chat",
@@ -187,7 +189,48 @@ async def websocket_chat(
                             }
                         }
                         await manager.broadcast_message(match_id, broadcast_data)
-                    
+
+                        # Notify the recipient if they're not actively looking at
+                        # this conversation right now (avoids double-notifying
+                        # someone who's already seeing the message live in-chat).
+                        other_pet_id = match.pet2_id if match.pet1_id == pet_id else match.pet1_id
+                        if str(other_pet_id) not in manager.get_local_connections(match_id):
+                            other_pet_result = await db.execute(
+                                select(PetProfile).where(PetProfile.id == other_pet_id)
+                            )
+                            other_pet = other_pet_result.scalar_one_or_none()
+                            if other_pet and sender_pet:
+                                message_notif = Notification(
+                                    user_id=other_pet.user_id,
+                                    notification_type=NotificationType.NEW_MESSAGE,
+                                    pet_id=other_pet.id,
+                                    related_pet_id=pet_id,
+                                    match_id=match_uuid,
+                                    message=f"{sender_pet.name} sent you a message",
+                                )
+                                db.add(message_notif)
+                                await db.commit()
+                                await db.refresh(message_notif)
+                                await notification_manager.broadcast_to_user(
+                                    str(other_pet.user_id),
+                                    {
+                                        "type": "notification",
+                                        "data": {
+                                            "id": str(message_notif.id),
+                                            "notification_type": message_notif.notification_type.value,
+                                            "message": message_notif.message,
+                                            "is_read": message_notif.is_read,
+                                            "created_at": message_notif.created_at.isoformat(),
+                                            "match_id": str(message_notif.match_id),
+                                            "other_pet": {
+                                                "id": str(sender_pet.id),
+                                                "name": sender_pet.name,
+                                                "primary_photo_url": sender_pet.primary_photo_url,
+                                            },
+                                        },
+                                    },
+                                )
+
                     elif msg_type == "read":
                         # Client marking messages as read
                         msg_id = message_data.get("message_id")
