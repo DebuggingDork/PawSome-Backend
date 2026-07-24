@@ -80,7 +80,7 @@ class PetPublicResponse(BaseModel):
     created_at: datetime
     primary_photo_url: str | None
     photos: list[PetPhotoResponse]
-    owner: PetOwnerBasicInfo  # NEW: Show owner info in browse
+    owner: PetOwnerBasicInfo | None  # Only populated for authenticated requests
 
     model_config = {
         "from_attributes": True,

@@ -33,12 +33,13 @@ async def browse_pets(
     breed: str | None = Query(default=None, max_length=100),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
-    """Public catalog of all active pets — no account needed, like browsing
-    products in a store. Coordinates are never exposed here. Each item carries
-    primary_photo_url for the card image; `total` lets the frontend paginate.
-    Now includes basic owner info (name, occupation, profile photo)."""
+    """Browsable directory of active pets — viewable without an account, like
+    the pet's own detail page. Coordinates are never exposed here. Owner info
+    (name, occupation, profile photo) is only attached for signed-in requests;
+    anonymous visitors see the pet but not who owns it."""
     filters = [PetProfile.is_active.is_(True)]
 
     if species is not None:
@@ -62,9 +63,11 @@ async def browse_pets(
     )
 
     pets = result.scalars().all()
-    
-    # Build response with owner info (already loaded via selectinload)
+
     items = [PetPublicResponse.model_validate(pet) for pet in pets]
+    if user is None:
+        for item in items:
+            item.owner = None
 
     return PetListResponse(
         items=items,
@@ -161,9 +164,12 @@ async def get_pet(
     if user is not None and pet.user_id == user.id:
         # Owner's view - full data with owner info
         return PetResponse.model_validate(pet)
-    
-    # Public view - includes owner info via owner property
-    return PetPublicResponse.model_validate(pet)
+
+    # Public view: owner info only for signed-in visitors, never for anonymous ones
+    public = PetPublicResponse.model_validate(pet)
+    if user is None:
+        public.owner = None
+    return public
 
 
 @router.patch("/{pet_id}", response_model=PetResponse)
