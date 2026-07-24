@@ -19,6 +19,7 @@ from app.models.notification import Notification, NotificationType
 from app.models.pet_profile import PetProfile
 from app.models.swipe import Swipe, SwipeAction
 from app.models.user import User
+from app.services.block_cache import cache_block
 from app.services.match_scoring import calculate_match_score
 from app.schemas.match import (
     MarkNotificationReadRequest,
@@ -38,6 +39,7 @@ from app.schemas.statistics import (
 )
 from app.schemas.browse import BrowsePetsResponse, MatchCandidateResponse
 from app.schemas.undo import UndoSwipeRequest, UndoSwipeResponse
+from app.schemas.unmatch import UnmatchRequest, UnmatchResponse
 from app.utils.distance import haversine_distance
 
 router = APIRouter(
@@ -217,6 +219,89 @@ async def get_my_matches(
     
     matches = matches_result.scalars().all()
     return [MatchResponse.model_validate(m) for m in matches]
+
+
+@router.post("/{match_id}/unmatch", response_model=UnmatchResponse)
+async def unmatch(
+    match_id: uuid.UUID,
+    body: UnmatchRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Leave a match — removes it from both sides' Matches/Chat lists.
+
+    No notification is sent to the other user on a plain unmatch (matches how
+    most matching apps handle this — unmatching isn't meant to be a callout).
+    Optionally also blocks the other user, which additionally soft-deletes
+    every other active match between the two of you, same as POST /blocks.
+    """
+    match_result = await db.execute(
+        select(Match).where(Match.id == match_id, Match.deleted_at.is_(None))
+    )
+    match = match_result.scalar_one_or_none()
+    if match is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Match not found")
+
+    pets_result = await db.execute(
+        select(PetProfile).where(PetProfile.id.in_([match.pet1_id, match.pet2_id]))
+    )
+    pets = {pet.id: pet for pet in pets_result.scalars().all()}
+    your_pet = next((p for p in pets.values() if p.user_id == user.id), None)
+    if your_pet is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not part of this match")
+
+    other_pet = pets[match.pet1_id] if your_pet.id == match.pet2_id else pets[match.pet2_id]
+    other_user_id = other_pet.user_id
+
+    now = datetime.now(timezone.utc)
+    match.deleted_at = now
+
+    if body.block_user:
+        existing_block_result = await db.execute(
+            select(Block).where(
+                Block.blocking_user_id == user.id,
+                Block.blocked_user_id == other_user_id,
+            )
+        )
+        if existing_block_result.scalar_one_or_none() is None:
+            # Same sweep as POST /blocks: blocking removes every match between
+            # the two of you, not just the one being unmatched from here.
+            other_pets_result = await db.execute(
+                select(PetProfile.id).where(PetProfile.user_id == other_user_id)
+            )
+            other_pet_ids = [row[0] for row in other_pets_result.all()]
+            your_pets_result = await db.execute(
+                select(PetProfile.id).where(PetProfile.user_id == user.id)
+            )
+            your_pet_ids = [row[0] for row in your_pets_result.all()]
+
+            if other_pet_ids and your_pet_ids:
+                other_matches_result = await db.execute(
+                    select(Match).where(
+                        Match.deleted_at.is_(None),
+                        or_(
+                            and_(Match.pet1_id.in_(your_pet_ids), Match.pet2_id.in_(other_pet_ids)),
+                            and_(Match.pet1_id.in_(other_pet_ids), Match.pet2_id.in_(your_pet_ids)),
+                        ),
+                    )
+                )
+                for other_match in other_matches_result.scalars().all():
+                    other_match.deleted_at = now
+
+            db.add(Block(blocking_user_id=user.id, blocked_user_id=other_user_id))
+
+    await db.commit()
+
+    if body.block_user:
+        await cache_block(redis, str(user.id), str(other_user_id))
+
+    return UnmatchResponse(
+        message=f"Unmatched from {other_pet.name}" + (" and blocked" if body.block_user else ""),
+        match_id=match.id,
+        blocked=body.block_user,
+        notification_sent=False,
+    )
 
 
 @router.get("/likes-received")
