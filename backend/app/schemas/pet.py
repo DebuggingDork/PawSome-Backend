@@ -52,6 +52,20 @@ class PetPhotoResponse(BaseModel):
     }
 
 
+class PetSummary(BaseModel):
+    """Minimal pet card shown on an owner's profile page."""
+
+    id: UUID
+    name: str
+    species: PetSpecies
+    breed: str
+    primary_photo_url: str | None
+
+    model_config = {
+        "from_attributes": True,
+    }
+
+
 class PetPublicResponse(BaseModel):
     """What other users see when browsing — never exposes exact coordinates."""
 

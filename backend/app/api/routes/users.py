@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_current_user_optional
 from app.core.config import settings
@@ -23,6 +24,7 @@ from app.schemas.auth import (
     UserPhotoPresignResponse,
     UserPhotoConfirmRequest,
 )
+from app.schemas.pet import PetSummary
 from app.schemas.preferences import UpdatePreferencesRequest, MatchPreferenceResponse
 from app.services import r2
 
@@ -189,10 +191,23 @@ async def get_profile_completion(
     )
 
 
+def _active_pet_summaries(user: User) -> list[PetSummary]:
+    return [PetSummary.model_validate(p) for p in user.pet_profiles if p.is_active]
+
+
 @router.get("/me", response_model=UserFullProfile)
-async def get_my_profile(user: User = Depends(get_current_user)):
+async def get_my_profile(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Get the authenticated user's full profile including address and email."""
-    return UserFullProfile.model_validate(user)
+    result = await db.execute(
+        select(User).options(selectinload(User.pet_profiles)).where(User.id == user.id)
+    )
+    user = result.scalar_one()
+    profile = UserFullProfile.model_validate(user)
+    profile.pets = _active_pet_summaries(user)
+    return profile
 
 
 @router.patch("/me", response_model=UserFullProfile)
@@ -259,7 +274,9 @@ async def get_user_profile(
     - Private view (matched connections only): includes address
     - Not visible: email
     """
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).options(selectinload(User.pet_profiles)).where(User.id == user_id)
+    )
     target_user = result.scalar_one_or_none()
 
     if target_user is None:
@@ -268,19 +285,27 @@ async def get_user_profile(
             detail="User not found",
         )
 
+    pets = _active_pet_summaries(target_user)
+
     # If the current user is viewing their own profile, redirect to /me
     if current_user and current_user.id == user_id:
-        return UserPrivateProfile.model_validate(target_user)
+        profile = UserPrivateProfile.model_validate(target_user)
+        profile.pets = pets
+        return profile
 
     # Check if they have matched pets
     if current_user:
         is_matched = await _check_if_matched(db, current_user.id, user_id)
         if is_matched:
             # Matched users can see address
-            return UserPrivateProfile.model_validate(target_user)
+            profile = UserPrivateProfile.model_validate(target_user)
+            profile.pets = pets
+            return profile
 
     # Default: public profile only
-    return UserPublicProfile.model_validate(target_user)
+    profile = UserPublicProfile.model_validate(target_user)
+    profile.pets = pets
+    return profile
 
 
 def _require_r2_configured() -> None:

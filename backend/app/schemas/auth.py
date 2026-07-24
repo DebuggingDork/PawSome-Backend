@@ -2,6 +2,8 @@ from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.schemas.pet import PetSummary
+
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -59,6 +61,7 @@ class UserPublicProfile(BaseModel):
     occupation: str | None
     bio: str | None
     profile_photo_url: str | None
+    pets: list[PetSummary] = Field(default_factory=list, description="This owner's active pets")
 
     model_config = {
         "from_attributes": True,
