@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import and_, desc, or_, select
@@ -29,6 +29,8 @@ router = APIRouter(
     prefix="/chat",
     tags=["chat"],
 )
+
+MESSAGE_DELETE_WINDOW = timedelta(minutes=15)
 
 
 async def verify_match_access(match_id: uuid.UUID, user: User, db: AsyncSession) -> tuple[Match, uuid.UUID]:
@@ -453,6 +455,42 @@ async def _get_match_message(match_id: uuid.UUID, message_id: uuid.UUID, db: Asy
     if not message:
         raise HTTPException(status_code=404, detail="Message not found in this match")
     return message
+
+
+@router.delete("/{match_id}/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_message(
+    match_id: uuid.UUID,
+    message_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft delete your own message, within 15 minutes of sending it."""
+    _, pet_id = await verify_match_access(match_id, user, db)
+    message = await _get_match_message(match_id, message_id, db)
+
+    if message.sender_pet_id != pet_id:
+        raise HTTPException(status_code=403, detail="You can only delete your own messages")
+    if message.is_deleted:
+        return
+
+    age = datetime.now(timezone.utc) - message.created_at
+    if age > MESSAGE_DELETE_WINDOW:
+        raise HTTPException(
+            status_code=403,
+            detail="Messages can only be deleted within 15 minutes of sending",
+        )
+
+    message.is_deleted = True
+    message.deleted_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    await manager.broadcast_message(
+        str(match_id),
+        {
+            "type": "message_deleted",
+            "data": {"message_id": str(message_id)},
+        },
+    )
 
 
 @router.post(
