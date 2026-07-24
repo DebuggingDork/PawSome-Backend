@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from redis.asyncio import Redis
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
@@ -506,26 +507,19 @@ async def get_swipe_history(
     if not swipes:
         return SwipeHistoryResponse(swipes=[], total=total, limit=limit, offset=offset)
 
-    # Get target pet details
+    # Get target pet details (eager-load owner so PetPublicResponse.model_validate
+    # below can read target_pet.owner without an async lazy-load)
     target_pet_ids = [s.target_pet_id for s in swipes]
     pets_result = await db.execute(
-        select(PetProfile).where(PetProfile.id.in_(target_pet_ids))
+        select(PetProfile).options(selectinload(PetProfile.user)).where(PetProfile.id.in_(target_pet_ids))
     )
     pets_map = {p.id: p for p in pets_result.scalars().all()}
-
-    # Fetch owner info for all pets
-    user_ids = list({p.user_id for p in pets_map.values()})
-    users_result = await db.execute(select(User).where(User.id.in_(user_ids)))
-    users_map = {u.id: u for u in users_result.scalars().all()}
 
     history_items: list[SwipeHistoryItem] = []
     for swipe in swipes:
         target_pet = pets_map.get(swipe.target_pet_id)
         if target_pet:
             pet_dict = PetPublicResponse.model_validate(target_pet).model_dump()
-            owner = users_map.get(target_pet.user_id)
-            if owner:
-                pet_dict["owner"] = owner
             history_items.append(
                 SwipeHistoryItem(
                     swipe_id=swipe.id,
@@ -1059,7 +1053,7 @@ async def browse_pets(
         filters.append(PetProfile.is_trained == is_trained)
 
     candidates_result = await db.execute(
-        select(PetProfile).where(*filters).limit(50)
+        select(PetProfile).options(selectinload(PetProfile.user)).where(*filters).limit(50)
     )
     candidates = candidates_result.scalars().all()
 
@@ -1111,9 +1105,7 @@ async def browse_pets(
     now_utc = datetime.now(timezone.utc)
     response_candidates: list[MatchCandidateResponse] = []
     for pet, dist in nearby:
-        owner = owners_map[pet.user_id]
         pet_dict = PetPublicResponse.model_validate(pet).model_dump()
-        pet_dict["owner"] = owner
         response_candidates.append(
             MatchCandidateResponse(
                 pet=pet_dict,
