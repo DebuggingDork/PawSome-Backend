@@ -14,10 +14,12 @@ from app.core.redis import get_redis
 from app.models.favorite import Favorite
 from app.models.block import Block
 from app.models.match import Match
+from app.models.match_preference import MatchPreference
 from app.models.notification import Notification, NotificationType
 from app.models.pet_profile import PetProfile
 from app.models.swipe import Swipe, SwipeAction
 from app.models.user import User
+from app.services.match_scoring import calculate_match_score
 from app.schemas.match import (
     MarkNotificationReadRequest,
     MatchResponse,
@@ -1077,7 +1079,7 @@ async def browse_pets(
     owners_map: dict = {u.id: u for u in owners_result.scalars().all()}
 
     nearby: list[tuple[PetProfile, float]] = []
-    
+
     if has_location:
         # Calculate distances only if user has location
         for pet in candidates:
@@ -1088,8 +1090,6 @@ async def browse_pets(
             dist = haversine_distance(user_lat, user_lng, owner.latitude, owner.longitude)
             if dist <= radius:
                 nearby.append((pet, dist))
-        # Sort by distance ascending
-        nearby.sort(key=lambda x: x[1])
     else:
         # No location set, return all candidates with distance = 0
         for pet in candidates:
@@ -1098,7 +1098,27 @@ async def browse_pets(
                 continue
             nearby.append((pet, 0.0))
 
-    # Apply limit after distance filtering
+    # 8. Score + rank. With a pet_id, rank by compatibility (breed/distance/age/
+    # gender preference) instead of plain distance — same scoring engine used
+    # nowhere else yet. Without one (anonymous/simple browse) fall back to
+    # distance ascending, same as before.
+    scores: dict[uuid.UUID, int] = {}
+    if my_pet is not None:
+        prefs_result = await db.execute(
+            select(MatchPreference).where(MatchPreference.user_id == current_user.id)
+        )
+        preference = prefs_result.scalar_one_or_none()
+        user_preferences = (
+            {"preferred_gender": preference.preferred_gender} if preference else None
+        )
+        for pet, dist in nearby:
+            score, _breakdown = calculate_match_score(my_pet, pet, dist, user_preferences)
+            scores[pet.id] = score
+        nearby.sort(key=lambda x: scores[x[0].id], reverse=True)
+    else:
+        nearby.sort(key=lambda x: x[1])
+
+    # Apply limit after ranking
     nearby = nearby[:limit]
 
     # 9. Build response candidates
@@ -1111,6 +1131,7 @@ async def browse_pets(
                 pet=pet_dict,
                 distance_km=round(dist, 2),
                 calculated_at=now_utc,
+                compatibility_score=scores.get(pet.id),
             )
         )
 
