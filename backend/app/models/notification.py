@@ -13,6 +13,8 @@ class NotificationType(str, enum.Enum):
     NEW_MATCH = "new_match"  # When two pets match
     NEW_LIKE = "new_like"  # When someone likes your pet (optional - could be noisy)
     NEW_MESSAGE = "new_message"  # A chat message arrived while you weren't in that conversation
+    PLAYDATE_PROPOSED = "playdate_proposed"  # A match proposed a real-world meetup
+    PLAYDATE_RESPONSE = "playdate_response"  # The other owner accepted/declined a playdate
 
 
 class Notification(Base):
@@ -61,6 +63,10 @@ class Notification(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # True when this NEW_LIKE notification came from a Super Woof — lets the
+    # frontend badge/sort it above ordinary likes.
+    is_super: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
