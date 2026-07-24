@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from redis.asyncio import Redis
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,7 @@ from app.models.swipe import Swipe, SwipeAction
 from app.models.user import User
 from app.services.block_cache import cache_block
 from app.services.match_scoring import calculate_match_score
+from app.services.notification_manager import manager as notification_manager
 from app.schemas.match import (
     MarkNotificationReadRequest,
     MatchResponse,
@@ -46,6 +47,72 @@ router = APIRouter(
     prefix="/matches",
     tags=["matches"],
 )
+
+
+async def _push_notification(notification: Notification, other_pet: PetProfile) -> None:
+    """Push a just-created Notification to its recipient over the live WS, if
+    they're connected. The row is already saved either way — this only
+    affects how fast they find out."""
+    await notification_manager.broadcast_to_user(
+        str(notification.user_id),
+        {
+            "type": "notification",
+            "data": {
+                "id": str(notification.id),
+                "notification_type": notification.notification_type.value,
+                "message": notification.message,
+                "is_read": notification.is_read,
+                "created_at": notification.created_at.isoformat(),
+                "match_id": str(notification.match_id) if notification.match_id else None,
+                "other_pet": {
+                    "id": str(other_pet.id),
+                    "name": other_pet.name,
+                    "primary_photo_url": other_pet.primary_photo_url,
+                },
+            },
+        },
+    )
+
+
+@router.websocket("/notifications/ws")
+async def websocket_notifications(
+    websocket: WebSocket,
+    token: str = Query(..., description="JWT access token"),
+):
+    """Real-time push for new_like/new_match/new_message notifications.
+    Connect: ws://localhost:8000/matches/notifications/ws?token=your-jwt-token
+    The row is always saved via the REST endpoints regardless of whether this
+    socket is connected — this is purely a "find out faster" channel."""
+    from app.core.security import verify_token
+
+    try:
+        user_id = verify_token(token, "access")
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    async for db in get_db():
+        try:
+            user_result = await db.execute(select(User).where(User.id == user_id))
+            user = user_result.scalar_one_or_none()
+            if not user:
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+
+            redis = await get_redis()
+            if not notification_manager.redis_client:
+                await notification_manager.initialize(redis)
+
+            await notification_manager.connect(websocket, str(user.id))
+            try:
+                while True:
+                    # No client->server messages expected; just keep the
+                    # connection open and detect disconnects.
+                    await websocket.receive_text()
+            except WebSocketDisconnect:
+                notification_manager.disconnect(str(user.id))
+        finally:
+            await db.close()
 
 
 @router.post("/swipe", response_model=SwipeResponse)
@@ -134,6 +201,7 @@ async def swipe_on_pet(
     db.add(swipe)
     
     # If it's a LIKE, send notification to target pet owner (no auto-match)
+    notification_target: Notification | None = None
     if body.action == "like":
         # Send "NEW_LIKE" notification to target pet owner
         notification_target = Notification(
@@ -145,7 +213,7 @@ async def swipe_on_pet(
             message=f"{swiper_pet.name} is interested in {target_pet.name}!",
         )
         db.add(notification_target)
-    
+
     # Auto-remove favorite: if pet had favorited the target, soft-delete it on swipe
     existing_favorite_result = await db.execute(
         select(Favorite).where(
@@ -160,7 +228,11 @@ async def swipe_on_pet(
 
     await db.commit()
     await db.refresh(swipe)
-    
+
+    if notification_target is not None:
+        await db.refresh(notification_target)
+        await _push_notification(notification_target, swiper_pet)
+
     return SwipeResponse(
         id=swipe.id,
         swiper_pet_id=swipe.swiper_pet_id,
@@ -720,7 +792,11 @@ async def accept_like(
     
     await db.commit()
     await db.refresh(match)
-    
+    await db.refresh(your_match_notif)
+    await db.refresh(other_match_notif)
+    await _push_notification(your_match_notif, other_pet)
+    await _push_notification(other_match_notif, your_pet)
+
     # Grant achievements for both users
     from app.models.user_achievement import AchievementType
     from app.services import achievements
