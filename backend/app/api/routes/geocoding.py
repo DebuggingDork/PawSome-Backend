@@ -2,7 +2,7 @@ import asyncio
 import time
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.api.deps import get_current_user
 from app.models.user import User
@@ -29,12 +29,31 @@ _last_call_monotonic = 0.0
 MIN_INTERVAL_SECONDS = 1.0
 
 
-async def _throttled_get(client: httpx.AsyncClient, url: str, params: dict) -> httpx.Response:
+class ClientGone(Exception):
+    """The browser cancelled this request before it reached the front of the queue."""
+
+
+async def _throttled_get(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict,
+    request: Request | None = None,
+) -> httpx.Response:
     global _last_call_monotonic
     async with _throttle_lock:
         wait = MIN_INTERVAL_SECONDS - (time.monotonic() - _last_call_monotonic)
         if wait > 0:
             await asyncio.sleep(wait)
+
+        # Typing an address produces a burst of searches, each one abandoned by
+        # the next keystroke. Aborting the fetch in the browser doesn't stop the
+        # handler here, so without this check every dead search still waited its
+        # turn and spent a full second of the shared Nominatim budget fetching a
+        # result nobody would ever read — delaying the one search that mattered
+        # behind all of them.
+        if request is not None and await request.is_disconnected():
+            raise ClientGone
+
         try:
             response = await client.get(url, params=params, headers=HEADERS)
         finally:
@@ -54,6 +73,7 @@ def _to_result(raw: dict) -> GeocodeResult:
 
 @router.get("/search", response_model=list[GeocodeResult])
 async def search_address(
+    request: Request,
     q: str = Query(..., min_length=3, max_length=200),
     user: User = Depends(get_current_user),
 ):
@@ -64,7 +84,12 @@ async def search_address(
                 client,
                 f"{NOMINATIM_BASE}/search",
                 {"format": "jsonv2", "addressdetails": 1, "limit": 5, "q": q},
+                request,
             )
+    except ClientGone:
+        # Nobody is waiting on this any more; an empty list is the cheapest way
+        # to close it out.
+        return []
     except httpx.HTTPError:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Address search is temporarily unavailable")
 
