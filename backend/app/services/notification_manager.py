@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Dict
+from typing import Dict, Set
 
 from fastapi import WebSocket
 from redis.asyncio import Redis
@@ -13,8 +13,15 @@ class NotificationManager:
     (match_id, pet_id) since notifications belong to a person, not a chat."""
 
     def __init__(self):
-        # {user_id: WebSocket} — one notification connection per signed-in user.
-        self.active_connections: Dict[str, WebSocket] = {}
+        # {user_id: {WebSocket, ...}} — a signed-in user can legitimately hold
+        # more than one live connection at once (multiple tabs/devices, or on
+        # this app specifically, the desktop and mobile navbars each mounting
+        # their own NotificationBell at the same time regardless of viewport).
+        # A single-slot dict here used to mean the second connection silently
+        # stole the first one's spot, and either socket disconnecting could
+        # pop the *other*, still-live one out of the map — killing delivery
+        # to a tab that was never closed.
+        self.active_connections: Dict[str, Set[WebSocket]] = {}
         self.redis_client: Redis | None = None
         self.pubsub_task: asyncio.Task | None = None
 
@@ -24,19 +31,29 @@ class NotificationManager:
 
     async def connect(self, websocket: WebSocket, user_id: str):
         await websocket.accept()
-        self.active_connections[user_id] = websocket
+        self.active_connections.setdefault(user_id, set()).add(websocket)
 
-    def disconnect(self, user_id: str):
-        self.active_connections.pop(user_id, None)
+    def disconnect(self, user_id: str, websocket: WebSocket):
+        sockets = self.active_connections.get(user_id)
+        if not sockets:
+            return
+        sockets.discard(websocket)
+        if not sockets:
+            self.active_connections.pop(user_id, None)
 
     async def send_to_user(self, user_id: str, payload: dict):
-        websocket = self.active_connections.get(user_id)
-        if websocket is None:
+        sockets = self.active_connections.get(user_id)
+        if not sockets:
             return
-        try:
-            await websocket.send_text(json.dumps(payload))
-        except Exception:
-            self.disconnect(user_id)
+        message = json.dumps(payload)
+        dead: list[WebSocket] = []
+        for websocket in sockets:
+            try:
+                await websocket.send_text(message)
+            except Exception:
+                dead.append(websocket)
+        for websocket in dead:
+            self.disconnect(user_id, websocket)
 
     async def broadcast_to_user(self, user_id: str, payload: dict):
         """Publish via Redis so the push reaches the user regardless of which

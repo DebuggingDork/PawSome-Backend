@@ -116,7 +116,7 @@ async def websocket_notifications(
                     # connection open and detect disconnects.
                     await websocket.receive_text()
             except WebSocketDisconnect:
-                notification_manager.disconnect(str(user.id))
+                notification_manager.disconnect(str(user.id), websocket)
         finally:
             await db.close()
 
@@ -143,15 +143,6 @@ async def swipe_on_pet(
     - Haven't already swiped on this pet
     - Super Woof: caller hasn't used today's allowance
     """
-    if body.action == "super_like":
-        await check_rate_limit(
-            redis=redis,
-            user_id=str(user.id),
-            key_prefix="super_woof",
-            limit=SUPER_WOOF_LIMIT,
-            window=SUPER_WOOF_WINDOW_SECONDS,
-        )
-
     # Verify the swiper pet belongs to the user
     swiper_result = await db.execute(
         select(PetProfile).where(
@@ -209,7 +200,21 @@ async def swipe_on_pet(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Already swiped on this pet",
         )
-    
+
+    # Charge today's Super Woof allowance only once the swipe is actually
+    # going to happen — this used to run before the checks above, so a
+    # super_like that failed validation (already swiped, own pet, species
+    # mismatch, ...) still burned the caller's one-per-day allowance for
+    # nothing.
+    if body.action == "super_like":
+        await check_rate_limit(
+            redis=redis,
+            user_id=str(user.id),
+            key_prefix="super_woof",
+            limit=SUPER_WOOF_LIMIT,
+            window=SUPER_WOOF_WINDOW_SECONDS,
+        )
+
     # Create the swipe
     action_map = {
         "like": SwipeAction.LIKE,
