@@ -66,6 +66,11 @@ class User(Base):
         nullable=True,
     )
 
+    pincode: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
     profile_photo_url: Mapped[str | None] = mapped_column(
         String(512),
         nullable=True,

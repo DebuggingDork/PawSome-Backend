@@ -49,6 +49,7 @@ class UserProfileUpdate(BaseModel):
     occupation: str | None = Field(default=None, max_length=200)
     bio: str | None = Field(default=None, max_length=2000)
     address: str | None = Field(default=None, max_length=500)
+    pincode: str | None = Field(default=None, max_length=20)
     profile_photo_url: str | None = Field(default=None, max_length=512)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
@@ -71,6 +72,7 @@ class UserPublicProfile(BaseModel):
 class UserPrivateProfile(UserPublicProfile):
     """Private profile - includes address, only visible to matched connections"""
     address: str | None
+    pincode: str | None
 
     model_config = {
         "from_attributes": True,

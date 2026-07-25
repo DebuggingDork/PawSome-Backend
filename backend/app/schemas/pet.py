@@ -28,6 +28,8 @@ class PetCreate(BaseModel):
     bio: str | None = Field(default=None, max_length=2000)
     lat: float = Field(ge=-90, le=90)
     lng: float = Field(ge=-180, le=180)
+    address: str | None = Field(default=None, max_length=500)
+    pincode: str | None = Field(default=None, max_length=20)
     is_vaccinated: bool = False
     vaccination_date: date | None = None
     is_neutered: bool = False
@@ -43,6 +45,8 @@ class PetUpdate(BaseModel):
     bio: str | None = Field(default=None, max_length=2000)
     lat: float | None = Field(default=None, ge=-90, le=90)
     lng: float | None = Field(default=None, ge=-180, le=180)
+    address: str | None = Field(default=None, max_length=500)
+    pincode: str | None = Field(default=None, max_length=20)
     is_vaccinated: bool | None = None
     vaccination_date: date | None = None
     is_neutered: bool | None = None
@@ -105,6 +109,8 @@ class PetResponse(PetPublicResponse):
     user_id: UUID
     lat: float
     lng: float
+    address: str | None
+    pincode: str | None
     updated_at: datetime
 
 
