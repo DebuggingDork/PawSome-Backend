@@ -49,6 +49,7 @@ from app.models.swipe import Swipe, SwipeAction  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.services.r2 import _client, build_object_key, build_user_photo_key, public_url  # noqa: E402
 
+from backfill_achievements import sync_achievements  # noqa: E402
 from seed_data import (  # noqa: E402
     AREAS,
     CONVERSATIONS,
@@ -497,9 +498,15 @@ async def main() -> int:
         session.add_all(notifications)
         session.add_all(participants)
         session.add_all(messages)
+        await session.flush()
+
+        # Badges are normally granted by the routes as each action happens, so
+        # rows written straight to the database earn nothing — seeded accounts
+        # showed "0 of 9 earned" while having photos, pets, matches and messages.
+        granted = await sync_achievements(session)
 
         await session.commit()
-        log(f"  committed ({len(photo_rows)} pet photos)")
+        log(f"  committed ({len(photo_rows)} pet photos, {granted} achievements)")
 
     demo = PEOPLE[0]
     log("\n" + "=" * 72)
