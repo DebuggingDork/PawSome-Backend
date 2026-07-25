@@ -3,12 +3,12 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from redis.asyncio import Redis
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core.rate_limit import block_rate_limit
+from app.core.rate_limit import check_rate_limit
 from app.core.redis import get_redis
 from app.models.block import Block
 from app.models.match import Match
@@ -31,7 +31,6 @@ async def create_block(
     body: CreateBlockRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    _rate_limit: None = Depends(block_rate_limit),
     redis: Redis = Depends(get_redis),
 ):
     """
@@ -72,6 +71,17 @@ async def create_block(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User already blocked",
         )
+
+    # Charge the daily block allowance only now that the request is known to
+    # be a real, new block — not for a request that was always going to 400
+    # (self-block, unknown user, already-blocked).
+    await check_rate_limit(
+        redis=redis,
+        user_id=str(current_user.id),
+        key_prefix="block",
+        limit=20,
+        window=86400,
+    )
 
     # 4. Find and soft-delete all active matches between the two users
     # Get pet IDs for both users
