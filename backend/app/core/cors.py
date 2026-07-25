@@ -7,7 +7,10 @@ def _parse_cors_origins(raw:str) -> list[str]:
 
 def setup_cors(app:FastAPI) -> None:
     origins = _parse_cors_origins(settings.cors_origins)
-    print(f"🔒 CORS enabled for origins: {origins}")
+    # Plain ASCII only — some Windows terminals default to a codepage (e.g. cp1252)
+    # that can't encode this emoji, which crashed the server on import before it
+    # ever got to bind a socket.
+    print(f"CORS enabled for origins: {origins}")
     
     app.add_middleware(
         CORSMiddleware,
