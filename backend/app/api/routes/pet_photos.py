@@ -160,6 +160,82 @@ async def confirm_photo_upload(
     return photo
 
 
+@router.post("/{photo_id}/replace/presign", response_model=PhotoPresignResponse)
+async def presign_photo_replace(
+    photo_id: uuid.UUID,
+    body: PhotoPresignRequest,
+    pet: PetProfile = Depends(get_owned_pet_any),
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 1 of replacing an existing photo's image in place: get a presigned
+    URL for the new file. Doesn't touch the DB row or count against the
+    5-photo cap — swapping a photo isn't adding one."""
+    _require_r2_configured()
+    await _get_owned_photo(photo_id, pet, db)
+
+    object_key = r2.build_object_key(pet.id, body.content_type)
+    upload_url = r2.create_presigned_upload(object_key, body.content_type)
+
+    return PhotoPresignResponse(
+        upload_url=upload_url,
+        object_key=object_key,
+        expires_in=r2.PRESIGNED_URL_EXPIRES_SECONDS,
+    )
+
+
+@router.post("/{photo_id}/replace", response_model=PetPhotoResponse)
+async def confirm_photo_replace(
+    photo_id: uuid.UUID,
+    body: PhotoConfirmRequest,
+    pet: PetProfile = Depends(get_owned_pet_any),
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 2: point this photo at the newly uploaded file, keeping its id,
+    is_primary, and sort_order — a delete+re-add would lose the slot's
+    position and (if it was primary) its primary status. The old file is
+    removed from storage once the swap is saved."""
+    _require_r2_configured()
+    photo = await _get_owned_photo(photo_id, pet, db)
+
+    if not body.object_key.startswith(f"pets/{pet.id}/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Object key does not belong to this pet",
+        )
+
+    existing = await db.execute(
+        select(PetPhoto).where(PetPhoto.object_key == body.object_key)
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Photo already confirmed",
+        )
+
+    size = await run_in_threadpool(r2.get_object_size, body.object_key)
+    if size is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload not found in storage — PUT the file first",
+        )
+    if size > r2.MAX_PHOTO_BYTES:
+        await run_in_threadpool(r2.delete_object, body.object_key)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Image exceeds {r2.MAX_PHOTO_BYTES // (1024 * 1024)} MB limit",
+        )
+
+    old_object_key = photo.object_key
+    photo.object_key = body.object_key
+    photo.url = r2.public_url(body.object_key)
+
+    await db.commit()
+    await db.refresh(photo)
+    await run_in_threadpool(r2.delete_object, old_object_key)
+
+    return photo
+
+
 @router.patch("/{photo_id}/primary", response_model=PetPhotoResponse)
 async def set_primary_photo(
     photo_id: uuid.UUID,
