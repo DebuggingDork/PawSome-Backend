@@ -254,12 +254,18 @@ async def update_my_profile(
             PetProfile.is_active.is_(True),
         )
     )
-    has_active_pet = pets_result.scalar_one_or_none() is not None
-    
+    active_pets = pets_result.scalars().all()
+    has_active_pet = len(active_pets) > 0
+
     if has_all_fields and has_active_pet:
         await achievements.grant_achievement(db, user.id, AchievementType.PROFILE_COMPLETE)
 
-    return UserFullProfile.model_validate(user)
+    # GET /users/me populates this from the same kind of query — PATCH's
+    # response was skipping it, so it always came back as an empty list
+    # regardless of the caller's actual pets.
+    profile = UserFullProfile.model_validate(user)
+    profile.pets = [PetSummary.model_validate(p) for p in active_pets]
+    return profile
 
 
 @router.get("/{user_id}", response_model=UserPublicProfile | UserPrivateProfile)
