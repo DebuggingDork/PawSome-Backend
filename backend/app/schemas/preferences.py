@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class UpdatePreferencesRequest(BaseModel):
-    preferred_match_radius_km: float | None = Field(default=None, ge=1, le=500)
+    preferred_radius_km: float | None = Field(default=None, ge=1, le=500)
     preferred_species: str | None = None
     preferred_age_min: int | None = Field(default=None, ge=0)
     preferred_age_max: int | None = Field(default=None, ge=0)
