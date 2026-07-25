@@ -12,12 +12,14 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core.rate_limit import favorite_rate_limit
+from app.core.rate_limit import check_rate_limit
+from app.core.redis import get_redis
 from app.models.favorite import Favorite
 from app.models.pet_profile import PetProfile
 from app.models.user import User
@@ -27,7 +29,7 @@ from app.schemas.favorite import (
     FavoriteResponse,
     FavoriteWithPetResponse,
 )
-from app.schemas.pet import PetPublicResponse
+from app.schemas.pet import PetOwnerBasicInfo, PetPublicResponse
 
 router = APIRouter(prefix="/favorites", tags=["favorites"])
 
@@ -41,7 +43,7 @@ async def add_favorite(
     body: CreateFavoriteRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    _rate_limit: None = Depends(favorite_rate_limit),
+    redis: Redis = Depends(get_redis),
 ):
     """
     Bookmark a target pet for the current user's pet.
@@ -102,6 +104,17 @@ async def add_favorite(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Pet already in favorites",
         )
+
+    # Charge the daily favorite allowance only now that the request is known
+    # to be a real, new favorite — not for a request that was always going
+    # to 400/404 (bad pet_id, self-favorite, already favorited).
+    await check_rate_limit(
+        redis=redis,
+        user_id=str(current_user.id),
+        key_prefix="favorite",
+        limit=100,
+        window=86400,
+    )
 
     # 5. Create the favorite
     # Handle the case where a soft-deleted record exists for the same pair
@@ -212,7 +225,7 @@ async def list_favorites(
             continue
         owner = users_map.get(target_pet.user_id)
         pet_dict = PetPublicResponse.model_validate(target_pet).model_dump()
-        pet_dict["owner"] = owner
+        pet_dict["owner"] = PetOwnerBasicInfo.model_validate(owner) if owner else None
         items.append(
             FavoriteWithPetResponse(
                 id=fav.id,

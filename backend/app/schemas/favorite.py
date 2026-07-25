@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.schemas.pet import PetPublicResponse
+
 
 class CreateFavoriteRequest(BaseModel):
     pet_id: UUID
@@ -20,7 +22,11 @@ class FavoriteResponse(BaseModel):
 
 class FavoriteWithPetResponse(BaseModel):
     id: UUID
-    target_pet: dict  # holds PetPublicResponse data
+    # Was a bare `dict` — nothing validated/coerced its contents, so
+    # list_favorites's raw ORM `owner` assignment sailed through untyped and
+    # blew up at serialization time (pydantic doesn't know how to encode a
+    # SQLAlchemy User). A real nested model actually validates it.
+    target_pet: PetPublicResponse
     created_at: datetime
 
     model_config = {"from_attributes": True}
