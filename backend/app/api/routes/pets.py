@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_user, get_current_user_optional, get_owned_pet
+from app.api.deps import get_current_user, get_current_user_optional, get_owned_pet_any
 from app.core.database import get_db
 from app.models.pet_profile import PetProfile, PetSpecies
 from app.models.user import User
@@ -175,7 +175,10 @@ async def get_pet(
 @router.patch("/{pet_id}", response_model=PetResponse)
 async def update_pet(
     body: PetUpdate,
-    pet: PetProfile = Depends(get_owned_pet),
+    # get_owned_pet (not _any) requires is_active=True — right for browse/swipe,
+    # wrong here: a pet stays inactive until its first photo, so that filter
+    # 404'd owners trying to fix a typo on their own still-photo-less draft.
+    pet: PetProfile = Depends(get_owned_pet_any),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -192,7 +195,9 @@ async def update_pet(
 
 @router.delete("/{pet_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_pet(
-    pet: PetProfile = Depends(get_owned_pet),
+    # Same reasoning as update_pet: must also match still-photo-less drafts,
+    # otherwise an abandoned draft could never be removed either.
+    pet: PetProfile = Depends(get_owned_pet_any),
     db: AsyncSession = Depends(get_db),
 ):
     """Soft delete — deactivates the pet so future swipes/matches keep their references."""
