@@ -55,6 +55,8 @@ async def _to_response(
         location_name=event.location_name,
         latitude=event.latitude,
         longitude=event.longitude,
+        address=event.address,
+        pincode=event.pincode,
         event_time=event.event_time,
         species=event.species,
         creator=EventCreatorInfo.model_validate(creator),
@@ -82,6 +84,8 @@ async def create_event(
         location_name=body.location_name,
         latitude=body.latitude,
         longitude=body.longitude,
+        address=body.address,
+        pincode=body.pincode,
         event_time=body.event_time,
         species=body.species.value if body.species else None,
     )

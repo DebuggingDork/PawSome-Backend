@@ -10,6 +10,8 @@ class PlaydateCreate(BaseModel):
     location_name: str = Field(min_length=1, max_length=255)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
+    address: str | None = Field(default=None, max_length=500)
+    pincode: str | None = Field(default=None, max_length=20)
     note: str | None = Field(default=None, max_length=1000)
 
 
@@ -32,6 +34,8 @@ class PlaydateResponse(BaseModel):
     location_name: str
     latitude: float
     longitude: float
+    address: str | None
+    pincode: str | None
     note: str | None
     status: str
     proposed_by_pet: PlaydatePetInfo

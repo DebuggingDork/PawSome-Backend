@@ -63,6 +63,8 @@ async def _to_response(
         location_name=playdate.location_name,
         latitude=playdate.latitude,
         longitude=playdate.longitude,
+        address=playdate.address,
+        pincode=playdate.pincode,
         note=playdate.note,
         status=playdate.status.value,
         proposed_by_pet=PlaydatePetInfo.model_validate(proposer),
@@ -125,6 +127,8 @@ async def propose_playdate(
         location_name=body.location_name,
         latitude=body.latitude,
         longitude=body.longitude,
+        address=body.address,
+        pincode=body.pincode,
         note=body.note,
     )
     db.add(playdate)

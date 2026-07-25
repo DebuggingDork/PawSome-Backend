@@ -13,6 +13,8 @@ class EventCreate(BaseModel):
     location_name: str = Field(min_length=1, max_length=255)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
+    address: str | None = Field(default=None, max_length=500)
+    pincode: str | None = Field(default=None, max_length=20)
     event_time: datetime = Field(description="Must be in the future")
     species: PetSpecies | None = Field(default=None, description="Leave unset to welcome all species")
 
@@ -23,6 +25,8 @@ class EventUpdate(BaseModel):
     location_name: str | None = Field(default=None, min_length=1, max_length=255)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+    address: str | None = Field(default=None, max_length=500)
+    pincode: str | None = Field(default=None, max_length=20)
     event_time: datetime | None = None
     species: PetSpecies | None = None
 
@@ -42,6 +46,8 @@ class EventResponse(BaseModel):
     location_name: str
     latitude: float
     longitude: float
+    address: str | None
+    pincode: str | None
     event_time: datetime
     species: str | None
     creator: EventCreatorInfo
