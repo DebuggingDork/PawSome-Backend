@@ -37,10 +37,8 @@ distance-based matching returns believable numbers. Between them they have 29
 pets, ~100 photos, 12 matches, pending likes, Super Woofs, skips, and chat
 threads.
 
-**Every account uses the password `129`.** Note this is shorter than the 8-char
-minimum the registration endpoint enforces — login only verifies the hash, so
-these accounts sign in fine, but that password could not be set through the API.
-They are throwaway demo logins.
+**Every account uses the password `123456789`.** Nine characters, so it also
+clears the 8-char minimum the registration endpoint enforces.
 
 Sign in as **`arjun.reddy@example.com`** to see the fullest state: three pets,
 six matches, unread likes waiting to be accepted, and live chat threads.

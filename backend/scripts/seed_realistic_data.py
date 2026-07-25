@@ -60,11 +60,10 @@ from seed_data import (  # noqa: E402
     SUPER_LIKES,
 )
 
-# Every seeded account shares this password. Note it is shorter than the 8-char
-# minimum the registration endpoint enforces — login only verifies the hash, so
-# these accounts sign in fine, but the same password could not be set through
-# the API. That is deliberate: these are throwaway demo logins.
-SEED_PASSWORD = "129"
+# Every seeded account shares this password. Nine characters, so it also clears
+# the 8-char minimum the registration endpoint enforces — these accounts could
+# be re-created or password-reset through the API as-is.
+SEED_PASSWORD = "123456789"
 
 PET_PHOTO_MAX_EDGE = 1280
 PROFILE_PHOTO_MAX_EDGE = 512
