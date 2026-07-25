@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core.rate_limit import check_rate_limit, undo_rate_limit
+from app.core.rate_limit import check_rate_limit
 from app.core.redis import get_redis
 from app.models.favorite import Favorite
 from app.models.block import Block
@@ -607,7 +607,7 @@ async def mark_notifications_read(
     )
     
     notifications = result.scalars().all()
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     
     for notif in notifications:
         notif.is_read = True
@@ -629,7 +629,7 @@ async def mark_all_notifications_read(
             Notification.is_read.is_(False),
         )
     )
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     for notif in result.scalars().all():
         notif.is_read = True
         notif.read_at = now
@@ -892,7 +892,7 @@ async def accept_like(
     
     # Mark the original like notification as read
     notification.is_read = True
-    notification.read_at = datetime.now()
+    notification.read_at = datetime.now(timezone.utc)
     
     await db.commit()
     await db.refresh(match)
@@ -968,10 +968,29 @@ async def reject_like(
     
     # Just mark as read, no match created
     notification.is_read = True
-    notification.read_at = datetime.now()
-    
+    notification.read_at = datetime.now(timezone.utc)
+
+    # Record a SKIP so this pet stops resurfacing in "likes you" — without
+    # this, rejecting only dismissed the notification. /likes-received and
+    # /browse both filter on the Swipe table, not Notification, so the same
+    # pet kept coming back every time the list was refetched.
+    existing_swipe = await db.execute(
+        select(Swipe).where(
+            Swipe.swiper_pet_id == notification.pet_id,
+            Swipe.target_pet_id == notification.related_pet_id,
+        )
+    )
+    if existing_swipe.scalar_one_or_none() is None:
+        db.add(
+            Swipe(
+                swiper_pet_id=notification.pet_id,
+                target_pet_id=notification.related_pet_id,
+                action=SwipeAction.SKIP,
+            )
+        )
+
     await db.commit()
-    
+
     return {
         "message": "Like rejected. No match created.",
     }
@@ -981,7 +1000,6 @@ async def reject_like(
 async def undo_swipe(
     body: UndoSwipeRequest,
     current_user: User = Depends(get_current_user),
-    _rate_limit: None = Depends(undo_rate_limit),
     redis: Redis = Depends(get_redis),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1067,6 +1085,20 @@ async def undo_swipe(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot undo: messages exist in this match",
             )
+
+    # Charge the daily undo allowance only now that every check above has
+    # passed — same reasoning as the Super Woof and report/block/favorite
+    # fixes earlier in this sweep: a Depends()-based rate limiter runs
+    # before the route body, so it used to charge even for a swipe_id that
+    # didn't exist, wasn't yours, was already undone, or was outside the
+    # 5-minute window — none of which actually attempt an undo.
+    await check_rate_limit(
+        redis=redis,
+        user_id=str(current_user.id),
+        key_prefix="undo",
+        limit=10,
+        window=3600,
+    )
 
     # 7. Apply changes in a single transaction
     swipe.is_undone = True
