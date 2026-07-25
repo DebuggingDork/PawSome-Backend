@@ -8,12 +8,14 @@ Requirements covered: 5.4, 5.5, 11.6, 12.2, 13.6, 13.7, 13.8, 15.3
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core.rate_limit import report_rate_limit
+from app.core.rate_limit import check_rate_limit
+from app.core.redis import get_redis
 from app.models.pet_profile import PetProfile
 from app.models.report import Report
 from app.models.user import User
@@ -27,9 +29,9 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 @router.post("", response_model=ReportResponse, status_code=status.HTTP_201_CREATED)
 async def create_report(
     body: CreateReportRequest,
-    _rate_limit: None = Depends(report_rate_limit),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ) -> ReportResponse:
     """Submit a report against another user, optionally targeting a specific pet profile.
 
@@ -69,6 +71,18 @@ async def create_report(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Reported pet not found or does not belong to the reported user",
             )
+
+    # Charge the daily report allowance only now that the request is known
+    # to be a real, valid report — was previously a Depends() that ran
+    # ahead of body validation, so a malformed request (e.g. too-short
+    # description) still burned one of the caller's 5 daily reports.
+    await check_rate_limit(
+        redis=redis,
+        user_id=str(current_user.id),
+        key_prefix="report",
+        limit=5,
+        window=86400,
+    )
 
     # 4. Sanitize description
     sanitized_description = body.description.strip()
