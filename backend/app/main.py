@@ -1,3 +1,14 @@
+import sys
+
+# Some Windows terminals default to a codepage (e.g. cp1252) that can't encode
+# emoji, which crashes any print() containing one before the app even starts
+# (hit this three times now across main.py, cors.py, email.py). Reconfiguring
+# stdout/stderr to UTF-8 here fixes it for every print in the process instead
+# of stripping emoji one file at a time as they're found.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 from fastapi import FastAPI
 
 from app.core.config import settings
