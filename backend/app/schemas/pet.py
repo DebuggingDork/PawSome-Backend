@@ -13,6 +13,7 @@ class PetOwnerBasicInfo(BaseModel):
     full_name: str | None
     occupation: str | None
     profile_photo_url: str | None
+    is_verified: bool = False
 
     model_config = {
         "from_attributes": True,
