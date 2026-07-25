@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from redis.asyncio import Redis
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -629,6 +629,38 @@ async def mark_all_notifications_read(
         notif.is_read = True
         notif.read_at = now
 
+    await db.commit()
+
+
+@router.delete("/notifications/{notification_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_notification(
+    notification_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss a single notification permanently (not just mark it read)."""
+    result = await db.execute(
+        select(Notification).where(
+            Notification.id == notification_id,
+            Notification.user_id == user.id,
+        )
+    )
+    notification = result.scalar_one_or_none()
+    if not notification:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
+
+    await db.delete(notification)
+    await db.commit()
+
+
+@router.delete("/notifications", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_notifications(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear every notification for the caller — a full reset, not scoped to
+    read/unread, matching what a "Clear all" button implies."""
+    await db.execute(delete(Notification).where(Notification.user_id == user.id))
     await db.commit()
 
 
