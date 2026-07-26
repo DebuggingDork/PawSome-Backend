@@ -8,10 +8,26 @@ no status code in devtools, and the frontend reports "Upload failed. Try again."
 from app.core.config import settings
 from app.services.r2 import _client
 
-ALLOWED_ORIGINS = [
+# Driven by the same CORS_ORIGINS env var as the API, so deploying a new frontend
+# origin is one setting in one place. The localhost entries are appended
+# unconditionally: a production .env sets CORS_ORIGINS to the deployed URL only,
+# and dropping localhost here would break photo uploads for whoever runs this
+# script next from their machine.
+#
+# R2 matches origins exactly - no subdomain wildcards - so unlike the API's
+# CORS_ORIGIN_REGEX this cannot cover Vercel preview deploys. Uploads work on
+# production and localhost; on a preview URL they will fail until that exact
+# origin is added to CORS_ORIGINS and this script is re-run.
+LOCAL_ORIGINS = [
     "http://localhost:5174",
     "http://localhost:5173",
 ]
+
+ALLOWED_ORIGINS = list(
+    dict.fromkeys(
+        [o.strip() for o in settings.cors_origins.split(",") if o.strip()] + LOCAL_ORIGINS
+    )
+)
 
 CORS_CONFIGURATION = {
     "CORSRules": [
