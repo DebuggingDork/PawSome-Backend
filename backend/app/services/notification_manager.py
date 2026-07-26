@@ -30,7 +30,8 @@ class NotificationManager:
         self.pubsub_task = asyncio.create_task(self._listen_to_redis())
 
     async def connect(self, websocket: WebSocket, user_id: str):
-        await websocket.accept()
+        """Register an already-accepted WebSocket — the caller owns the accept,
+        so the handshake completes before the database and Redis setup."""
         self.active_connections.setdefault(user_id, set()).add(websocket)
 
     def disconnect(self, user_id: str, websocket: WebSocket):

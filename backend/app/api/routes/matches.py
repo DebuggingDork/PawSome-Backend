@@ -97,6 +97,11 @@ async def websocket_notifications(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
+    # Same reasoning as the chat socket: accept before the user lookup and the
+    # Redis handshake, so the client isn't held in CONNECTING for the length of
+    # two remote round trips on every page load.
+    await websocket.accept()
+
     async for db in get_db():
         try:
             user_result = await db.execute(select(User).where(User.id == user_id))
