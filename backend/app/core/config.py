@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     )
     brevo_sender_name: str = Field("PawSome", description="Display name on outgoing mail")
 
+    # Ola Maps (routed distance + drive time, tuned for India; 500K calls/month
+    # free). Entirely optional: without a key /travel/eta answers with
+    # straight-line distance instead, so the feature degrades rather than
+    # disappearing. Weather, air quality, and nearby places need no key at all.
+    ola_maps_api_key: str = Field("", description="Ola Maps API key")
+    ola_maps_base_url: str = Field("https://api.olamaps.io", description="Ola Maps API base URL")
+
     # Whether an unverified account is blocked from swiping and matching. Kept as a
     # switch rather than hard-coded so a provider outage can be downgraded to a
     # nag without a redeploy: mail delivery is outside our control, and locking
@@ -74,6 +81,10 @@ class Settings(BaseSettings):
     @property
     def email_configured(self) -> bool:
         return bool(self.brevo_api_key and self.brevo_sender_email)
+
+    @property
+    def ola_maps_configured(self) -> bool:
+        return bool(self.ola_maps_api_key)
 
     @property
     def r2_configured(self) -> bool:

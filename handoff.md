@@ -1,224 +1,383 @@
-# Handoff — 26 July 2026
+# Handoff — 26 July 2026 (location & enrichment session)
+
+> Replaces the earlier handoff covering the seed-data/chat-performance session. That work is
+> committed and pushed-pending; anything from it still relevant is carried into **Gotchas**
+> below. Everything else here is new.
+
+---
 
 ## Goal
 
-**Project:** PawSome — a pet matching platform (FastAPI + Neon Postgres backend, React 19 +
-Vite + Tailwind v4 frontend, Cloudflare R2 for photos, Upstash Redis for pub/sub).
-Owners create pet profiles, swipe to match, chat, and arrange real-world playdates.
+Add a **"Show in map"** option to playdates so that when someone proposes a meetup with a date
+and an address, both owners can see the pin on a real map and get directions to it — an address
+string that *reads* right can still geocode to the wrong side of the city, and a playdate is a
+real-world meetup between people who matched online.
 
-**This session:** wipe all test data and rebuild it as realistic Hyderabad-based seed data
-with every image served from our own R2 bucket, then fix the pile of UI and performance
-bugs that surfaced while exercising the app against that data.
+Then, using the APIs.io MCP catalog, find other free APIs that make the app better with the data
+we already store, and document the whole thing. Four follow-ons were approved and built: weather
++ air quality on cards, add-to-calendar, nearby dog-park suggestions, and distance to a venue.
 
-## What I Completed
+The constraint driving nearly every design decision: **free and keyless wherever possible**, and
+every enrichment must degrade to nothing rather than break a card.
 
-### Data / seeding (the main task)
+---
 
-- **Emptied the environment.** 374 rows across 17 tables and all 34 R2 objects deleted.
-- **Rebuilt from scratch:** 25 users across real Hyderabad localities (Boduppal, Habsiguda,
-  Jubilee Hills, Vanasthalipuram, Madhapur, Gachibowli, Kondapur, Kukatpally, Banjara Hills,
-  Begumpet, Uppal, Secunderabad, Miyapur, Ameerpet, LB Nagar, Nallagandla, Manikonda,
-  Tarnaka, Alwal, Sainikpuri, Nizampet) with real coordinates, so distance matching returns
-  believable numbers. 29 pets, 100 pet photos, 25 profile photos, 12 matches, 38 swipes,
-  33 notifications, 20 chat messages, 24 chat participants, 177 achievements.
-- **All images live in R2.** 125 images fetched once at seed time, downscaled, re-encoded as
-  JPEG, uploaded — 8.2 MB total, ~67 KB each. Nothing in the database points at a
-  third-party host any more.
-- **Breed-accurate photos:** dogs from dog.ceo by breed, cats from TheCatAPI by breed id,
-  faces from pravatar with a fixed id per person so runs are reproducible.
-- **Removed the last Unsplash hotlinks from the frontend** (landing hero, three article
-  cards, featured tiles, auth background): 2.7 MB of full-resolution originals per visit,
-  now 0.6 MB from R2.
+## Current state
 
-### Bugs fixed
+### Working and verified
 
-| Bug | Root cause |
-| --- | --- |
-| Splash screen on **every** reload | No delay threshold; reveal blocked on two API calls; splash logo was an 842 KB PNG; fonts render-blocking |
-| Back after login returned to the sign-in form | `navigate()` without `replace`, and no guard on `/auth` |
-| Account tab showed a populated profile as blank | `useState(profile?.x ?? '')` ran while the query was still loading; useState ignores changed initial args |
-| Navbar showed "A" instead of the photo | Navbar read the profile under `['my-profile']`; everything else uses `['users','me']`, so photo changes never invalidated it |
-| Uploader always showed "upload a photo" | `PhotoUploader` could only preview a locally picked file, never a saved one |
-| Typing an address → "trouble connecting" | `AbortError` from our own cancelled requests counted as a network failure; 2 keystrokes tripped the threshold |
-| Modal panels wouldn't wheel-scroll | Four containers missing `lenis-prevent-scroll`, so Lenis swallowed the wheel |
-| Badges stuck at 0 of 9 | Achievements are granted by routes at action time; seeded rows never triggered them |
-| Notification dropdown controls dead | `NotificationBell` is mounted twice sharing one open flag; each copy saw the other's clicks as "outside" and closed on mousedown |
-| Playdate calendar icon invisible | Native date inputs paint chrome from the OS colour scheme; needed `color-scheme: dark` |
-| Chat stuck on "Connecting…" ~2.5 s | Three causes — see Decisions |
-| Chat messages saved but never delivered | Broadcast went out via Redis pub/sub only; unhealthy subscription meant nothing arrived |
+- **Backend:** 3 new endpoints live and passing an end-to-end smoke test (8/8 assertions,
+  3 consecutive green runs against real upstreams):
+  - `GET /conditions?lat=&lng=&at=` — Open-Meteo weather + US AQI, Redis-cached 30 min
+  - `GET /places/nearby?lat=&lng=&radius_m=&kinds=` — Overpass POIs, cached 24 h
+  - `GET /travel/eta?from_lat=&from_lng=&to_lat=&to_lng=` — distance, cached 6 h
+- **Frontend:** `npm run build` passes (`tsc -b` + vite). Map links, weather/AQI pills,
+  add-to-calendar, nearby chips and distance are wired into `PlaydateCard`, `EventCard` and
+  `LocationPicker`.
+- **Lint:** unchanged at 11 problems (8 errors, 3 warnings). Verified by `git stash` →
+  lint → `git stash pop`: the committed tree reports the identical count. **Zero new lint
+  issues introduced.** All 11 are pre-existing, in files not touched this session
+  (`Chat/index.tsx` calls `Date.now()` during render; some `set-state-in-effect` warnings).
 
-### Measured improvements
+### NOT verified — read this before claiming anything renders
 
-| | Before | After |
-| --- | --- | --- |
-| WebSocket handshake | 2.50 s | 0.06 s |
-| Chat message delivery | never arrived | 0.16 s |
-| Sustained typing | — | 0.63 s/msg |
-| Shell images per page load | ~1.67 MB | 47 KB |
-| Landing/auth imagery | 2.7 MB | 0.6 MB |
+**No UI was ever seen rendered this session.** No browser was opened. Every frontend change was
+verified by TypeScript compile + lint + reading only. Specifically unverified:
 
-## Current State
+- Whether the OSM iframe preview actually displays (CSP, X-Frame-Options, ad blockers are all
+  plausible failure modes that a build cannot catch)
+- Weather/AQI pill layout on a narrow card, and whether `EventCard` now overflows its grid tile
+  — several badges were added to a card that was already dense
+- Whether the `.ics` download works in-browser and imports with the correct local time
+- Whether the nearby-place chips wrap sanely in the propose form
+- That distance appears after using "use my current location"
 
-### Working
+### Half-done / deliberately incomplete
 
-- All 25 seeded accounts log in with password `123456789`.
-- `arjun.reddy@example.com` is the demo account: 3 pets, 6 matches, unread likes to accept,
-  live chat threads, 9/9 badges.
-- Verified through the real API: login, `/users/me`, `/pets/me`, `/matches/my-matches`,
-  `/matches/notifications`, `/matches/likes-received`, `/matches/browse`, `/chat/{id}/history`,
-  `/achievements/me`, `/geocoding/search`.
-- All 125 image URLs return 200; no nulls.
-- Chat WebSocket: handshake 0.06 s, bidirectional delivery confirmed, bad tokens rejected at
-  the handshake, unauthorised matches closed with 1008.
-- Frontend builds clean; ESLint clean on every file touched.
+- **Drive-time ETA is not enabled.** `/travel/eta` returns straight-line haversine distance
+  (`source: "straight_line"`, `duration_minutes: null`). The Ola Maps code path is written and
+  wired but has no key — see Failed attempts. This was an explicit user decision, not an
+  oversight.
+- **The Ola response parser has never run against a real response.** See Failed attempts.
 
-### Broken / unverified
+### Nothing is broken or in a bad intermediate state.
 
-- **Nothing known broken.** But see the caveat below.
-- **No visual verification was possible this whole session.** The Claude-in-Chrome extension
-  never connected, so every UI change was verified by build + lint + reading only. The
-  following were never seen rendered: the redesigned splash, the loading overlay's caption
-  spacing (the `-mt-6` pull-up is tuned from a screenshot, not measured against the real
-  Lottie), the profile identity header, the notifications header at your window width, and
-  the playdate form.
-- Pre-existing ESLint errors remain in files I didn't touch (`Chat/index.tsx` calls
-  `Date.now()` during render; a few `set-state-in-effect` warnings). Not introduced here.
-- `Mowgli` has 2 photos instead of 4 — dog.ceo only carries two dalmatian images upstream.
-  The seeder warns when a breed can't cover what's asked.
+### Uncommitted
 
-### Blockers for the next session
+**Everything from this session is uncommitted, in both repos.** Nothing was committed or
+pushed. See Changes made.
 
-1. **The Vite dev server is not running and must be restarted** before any of the frontend
-   work is visible. Vite reads `.env` only at startup, and `.env` now points at `127.0.0.1`.
-   Until restarted, the app still hits `localhost` and still pays the 2 s per-connection tax.
-2. I restarted the backend myself mid-session (it had died — port 8000 stopped responding and
-   the process was gone). It is running under `uvicorn --reload`, logging to
-   `backend/_devserver.log`.
+---
 
-## Files Changed
+## Files in play
 
-### Backend (tracked directly in the parent repo)
+### Backend — new
 
-| File | Change |
-| --- | --- |
-| `backend/scripts/reset_environment.py` | **New.** Wipes all DB rows + all R2 objects; dry-run by default, requires `--yes`, preserves `alembic_version` |
-| `backend/scripts/seed_data.py` | **New.** The cast as pure data — 25 people, 29 pets, localities, match graph, conversations |
-| `backend/scripts/seed_realistic_data.py` | **New.** Seeding pipeline: resolves breed photos, downloads, resizes, uploads to R2, writes all rows |
-| `backend/scripts/backfill_achievements.py` | **New.** Derives badges from DB state; reusable standalone or from the seeder |
-| `backend/scripts/upload_site_images.py` | **New.** One-off: moves the frontend's Unsplash imagery into R2, prints `siteImages.ts` |
-| `backend/docs/SEEDING.md` | **New.** Documents the reset → seed → site-images workflow |
-| `backend/app/api/routes/chat.py` | Accept the WebSocket before the DB/Redis setup; broadcast right after commit; cache pets per connection; merge two commits into one |
-| `backend/app/api/routes/matches.py` | Accept the notifications WebSocket before the user lookup and Redis handshake |
-| `backend/app/api/routes/geocoding.py` | Drop searches whose client has disconnected instead of queueing them behind the 1 req/s throttle |
-| `backend/app/services/chat_manager.py` | Deliver to local sockets first, then publish; `INSTANCE_ID` so the listener skips its own echo; no longer calls `accept()` |
-| `backend/app/services/notification_manager.py` | No longer calls `accept()` — the caller owns it |
-| `backend/seed_database.py` | **Deleted.** Superseded; stored Unsplash URLs in the DB |
-| `backend/clear_and_seed.py` | **Deleted.** Superseded |
-| `backend/docs/SEEDING_README.md` | **Deleted.** Described the old San Francisco dataset |
-| `backend/docs/QUICK_START_SEEDED_DATA.md` | **Deleted.** Same |
+| File | What / why |
+|---|---|
+| `backend/app/services/external_http.py` | Shared `Throttle` (per-provider rate limiting), `fetch_json`, `UpstreamUnavailable`, `unavailable()`. Extracted so weather/places/travel don't each copy `geocoding.py`'s plumbing |
+| `backend/app/services/api_cache.py` | `cached_json(redis, key, ttl, loader, should_cache=None)` and `geo_key()`. Modelled on `block_cache.py` — the repo uses no cache framework |
+| `backend/app/api/routes/conditions.py` | Open-Meteo proxy. Horizon guards, nearest-hour pick, concurrent forecast+AQI fetch |
+| `backend/app/api/routes/places.py` | Overpass proxy with mirror fallback |
+| `backend/app/api/routes/travel.py` | Ola Maps with haversine fallback |
+| `backend/app/schemas/{conditions,places,travel}.py` | Flat pydantic models (no `model_config` — external passthrough, matching `schemas/geocoding.py`) |
+| `backend/app/tests/test_enrichment_smoke.py` | 8-assertion smoke test. **This is the only test for any of this work** |
 
-### Frontend (git submodule at `frontend/`)
+### Backend — modified
 
-| File | Change |
-| --- | --- |
-| `index.html` | Splash redesigned as inline SVG, held invisible 450 ms, non-blocking fonts, crossfade dismissal |
-| `src/hooks/useSmoothScroll.ts` | Fade-out instead of `display:none`; 2.5 s cap so a slow backend can't pin the splash |
-| `src/App.tsx` | `GuestOnlyRoute` on `/auth`; stable nav during hydration; unified profile query key; smaller logo import |
-| `src/pages/Auth/index.tsx` | `navigate(..., { replace: true })` after login; R2 background image; smaller logo |
-| `src/pages/Profile/index.tsx` | **New** identity header — photo, name, verified badge, occupation, address, pincode, bio |
-| `src/pages/Profile/tabs/AccountTab.tsx` | Form split into `AccountForm`, mounted only once the query resolves |
-| `src/components/ui/PhotoUploader.tsx` | New `currentPhotoUrl` prop; always-visible "Change photo" affordance |
-| `src/components/ui/GlobalLoader.tsx` | Rewritten: blurred backdrop, tightened caption, rotating copy, bouncing ellipsis, progress rail |
-| `src/components/chat/PetAvatar.tsx` | Image-failure flag now tracks *which* URL failed instead of latching forever |
-| `src/components/chat/PlaydatePanel.tsx` | `color-scheme: dark` field, quick time slots, readable echo of the chosen time, `min` = now |
-| `src/components/notifications/NotificationBell.tsx` | `data-notifications-root` so both copies share one notion of "inside"; header relaid out |
-| `src/hooks/useOnClickOutside.ts` | Optional `ignoreSelector` for components mounted more than once |
-| `src/lib/api/client.ts` | Aborts no longer count as connectivity failures; defaults point at `127.0.0.1` |
-| `src/lib/siteImages.ts` | **New.** Single home for the R2 URLs of landing/auth imagery |
-| `src/index.css` | Loader keyframes, `.datetime-field`, much subtler scrollbar |
-| `src/assets/logo-256.png` | **New.** 47 KB, replacing an 828 KB original used at 40 px |
-| `src/components/community/PetCardDialog.tsx` | `lenis-prevent-scroll` + `overscroll-contain` |
-| `src/components/events/CreateEventModal.tsx` | Same |
-| `src/components/ui/LocationPicker.tsx` | Same |
-| `src/pages/Landing/sections/*.tsx` (5 files) | Point at `siteImages` instead of Unsplash |
-| `.env.example` | Documents why `127.0.0.1` beats `localhost` here |
-| `.env` | **Not committed (gitignored).** I edited your local copy to use `127.0.0.1` |
+| File | What / why |
+|---|---|
+| `backend/app/main.py` | Import + `include_router` for the 3 new routers |
+| `backend/app/core/config.py` | `ola_maps_api_key`, `ola_maps_base_url`, `ola_maps_configured` property. Follows the existing R2/Brevo blank-default pattern |
+| `backend/.env.example` | Documented Ola block explaining why the key is blank **on purpose** |
 
-## Decisions Made
+### Frontend — new (all in the `frontend/` submodule)
 
-- **Images are re-hosted, not hotlinked.** Sources (dog.ceo, TheCatAPI, pravatar, Unsplash)
-  are used once at seed time only. The database and frontend store R2 URLs exclusively.
-- **Seed data is separated from the seeding pipeline** (`seed_data.py` vs
-  `seed_realistic_data.py`) so the cast can be edited without touching the machinery. The
-  relationship graph is written out explicitly rather than randomised, so every run produces
-  the same demo state.
-- **Emails use `@example.com`** (RFC 2606 reserved). The app sends verification and reset
-  mail; plausible gmail addresses would mean mailing real strangers.
-- **Achievements are derived from database state**, not from the seed script's data
-  structures — so the backfill also repairs accounts broken any other way. It only ever adds
-  badges, never revokes, matching how the app grants them.
-- **WebSockets accept before authorisation.** The JWT check stays ahead of `accept()` because
-  it is local CPU work, so bad tokens never occupy a connection. Everything requiring I/O
-  happens after, closing with a policy code if it fails.
-- **Chat broadcasts locally first, then publishes to Redis** for other instances, tagged with
-  an `INSTANCE_ID` the listener uses to skip its own echo. Chat now works even if Redis is
-  unreachable.
-- **`127.0.0.1` over `localhost` in dev.** Not cosmetic: `localhost` resolves to `::1` first,
-  the backend binds IPv4 only, and Windows took 2.067 s to refuse the IPv6 attempt before
-  falling back (vs 0.015 s direct). This was most of the chat "Connecting…" delay.
-- **Password `123456789`.** You first said "129"; I read "1 to 9" as the intent when you
-  corrected it. At nine characters it also clears the API's 8-char minimum, so these accounts
-  can be password-reset normally.
+| File | What / why |
+|---|---|
+| `src/lib/maps.ts` | Google Maps deep-link builders + keyless OSM embed URL + `hasCoordinates` guard |
+| `src/lib/calendar.ts` | `.ics` (RFC 5545) builder, Google Calendar URL, `downloadIcs` |
+| `src/lib/api/{conditions,places,travel}.ts` | Thin `apiFetch` wrappers |
+| `src/hooks/useUserLocation.ts` | Read-only last-known position. **Never triggers a geolocation prompt** — intentional, see Gotchas |
+| `src/components/ui/ShowInMap.tsx` | Expandable OSM preview + Maps/Directions links |
+| `src/components/ui/Badge.tsx` | The repo's **first** shared badge component |
+| `src/components/ui/AddToCalendar.tsx` | Google Calendar link + `.ics` download |
+| `src/components/ui/NearbyPlaces.tsx` | Nearby-spot chips |
+| `src/components/ui/DistanceBadge.tsx` | "4.2 km away" |
+| `src/components/conditions/ConditionsBadge.tsx` | Weather + AQI pills |
 
-## Failed Attempts
+### Frontend — modified
 
-- **`thispersondoesnotexist.com` for synthetic faces** — now returns HTML, not an image.
-- **`source.unsplash.com` random-photo API** — returns 503; deprecated.
-- **One Unsplash photo ID in the frontend was already dead** —
-  `photo-1537151608804-ea6f117398e0`, behind the "Planning the Perfect First Playdate"
-  article card, 404s. It had been rendering broken. Replaced with a dog.ceo photo.
-- **Moving `accept()` earlier appeared not to help** (2.50 s → 2.05 s). It *had* worked; the
-  residual 2 s was the IPv6 resolution tax, which I only found by timing `/health` twice and
-  noticing the first call was slow and the second instant.
-- **A first pass at the playdate quick-slots read the clock during render** — ESLint's purity
-  rule caught it. Correct catch: the slot list would have shifted mid-form as a boundary
-  passed. Clock reads now happen once on mount.
-- **PowerShell here-string syntax in a Bash tool call** put a stray `@` in a commit message;
-  fixed by amending with a proper heredoc.
-- **Bundling scroll fixes into the profile-fix commit** — split into two commits afterwards.
+| File | What / why |
+|---|---|
+| `src/lib/api/types.ts` | Appended `Conditions`, `AqiBand`, `NearbyPlace`, `NearbyPlaceList`, `TravelEstimate`, `PlaceKind` |
+| `src/components/ui/LocationPicker.tsx` | Added `ShowInMap` + `NearbyPlaces`; calls `rememberUserLocation()` on geolocation success |
+| `src/components/chat/PlaydateCard.tsx` | `ShowInMap` always; `ConditionsBadge` when upcoming; `AddToCalendar` when accepted + future |
+| `src/components/events/EventCard.tsx` | `ShowInMap`, `DistanceBadge`, `ConditionsBadge` when upcoming, `AddToCalendar` when going + upcoming |
 
-## Next Steps
+### Docs
 
-1. **Restart the Vite dev server** (`cd frontend && npm run dev`). Nothing else works
-   correctly until this happens — `.env` changed.
-2. **Walk the UI and confirm the unverified visuals** (listed under Current State): reload a
-   few times to confirm the splash no longer appears; open Profile; open a chat; open the
-   notifications dropdown; hit Propose on a playdate.
-3. **Confirm the navbar avatar renders your photo.** The query-key fix should have settled it,
-   and a later screenshot suggested it had, but I never saw it directly.
-4. **Push.** Both repos are ahead of their remotes and nothing has been pushed all session.
-   Push the submodule first, then the parent, or the pointer will dangle.
-5. Consider: the `Mowgli` dalmatian photo shortage, if 2 photos bothers you — switch the breed
-   in `seed_data.py`.
-6. Consider: chat's sustained-typing latency (0.63 s/msg) is bounded by two sequential commits
-   to a database in another region. Moving the post-delivery bookkeeping onto a background
-   task with its own session would cut it further; I stopped short because it needs concurrency
-   testing I couldn't do here.
-7. Consider: the JS bundle is 1.17 MB (288 KB gzipped) and Vite warns about it. Code-splitting
-   the route components would be the obvious win.
+| File | What / why |
+|---|---|
+| `docs/LOCATION_AND_MAPS.md` | **New, ~400 lines.** The main artefact: location stack, endpoint reference, full API research, why-no-Google-SDK, why-no-Ola-key, constraints |
+| `docs/DOCUMENTATION_MAP.md` | Added a row + tree entry for the above |
+| `handoff.md` | This file (replaced the previous session's) |
 
-## Git Status
+### Not mine — pre-existing, unstaged
 
-- **Branch:** `main` in both the parent repo and the `frontend` submodule.
-- **Uncommitted changes:** none. Both working trees are clean.
-- **Unpushed:** everything from this session. 8 commits in the parent
-  (`7ccc62e..30b0abe`), 12 in the submodule (`f6a3a57..e089589`).
-- **Note:** `frontend` is tracked as a gitlink but has no `.gitmodules` entry, so
-  `git submodule status` errors. Pre-existing; not introduced here.
+`git status` shows ` D API_TEST_REPORT.md`, ` D DOCUMENTATION_MAP.md`, ` D INTEGRATION_SUMMARY.md`
+at the repo root with matching `?? docs/` copies. **That move predates this session** — it was in
+the git status snapshot at session start. Don't attribute it here; decide separately whether to
+commit it.
 
-No commit message needed — everything is committed. To push:
+---
+
+## Changes made
+
+Chronological. **None of this is committed.**
+
+1. Explored the playdate feature. Found `playdates` and `events` tables already store
+   `latitude`, `longitude`, `address`, `pincode` — **no migration was needed for any of this
+   work**, and none was written.
+2. Created `frontend/src/lib/maps.ts` + `ShowInMap.tsx`; wired into `PlaydateCard`, `EventCard`,
+   `LocationPicker`. Type-checked clean.
+3. Researched APIs via the APIs.io MCP server (see Failed attempts for query pitfalls).
+   Wrote `docs/LOCATION_AND_MAPS.md`.
+4. Planned phases 1–4 with the user. **Two decisions made by the user:** Ola Maps for real drive
+   ETA (over haversine-only), and build all four phases together. Plan saved at
+   `C:\Users\Mani Mamidala\.claude\plans\wiggly-humming-rain.md`.
+5. Built `external_http.py` + `api_cache.py`.
+6. Built `/conditions`, then added `should_cache` to `cached_json` after realising a
+   double-upstream-failure would be cached as an empty result for the full 30-min TTL.
+7. Built `/places/nearby` and `/travel/eta`; added Ola settings to `config.py`; registered all
+   three routers.
+8. Verified registration: `uv run python -c "from app.main import app; ..."` printed
+   `/conditions`, `/places/nearby`, `/travel/eta`.
+9. Built the frontend API modules, types, `Badge`, and the four feature components; wired them
+   into the three surfaces.
+10. `npm run build` — pass. `npm run lint` — 11 problems; confirmed identical on the stashed
+    (committed) tree, so none are new.
+11. Wrote `app/tests/test_enrichment_smoke.py`. **First run failed** on Overpass (see Failed
+    attempts) → added a mirror-instance fallback → green on 3 consecutive runs after.
+12. Updated `docs/LOCATION_AND_MAPS.md` from "proposed" to shipped; added the endpoint
+    reference and verification section.
+13. Added a documented Ola block to `backend/.env.example`.
+14. User hit the Ola credit-card wall (see Failed attempts). **User decided to stay on
+    straight-line distance.** Corrected the "no credit card required" claim in
+    `.env.example` and in 5 places in `docs/LOCATION_AND_MAPS.md`.
+15. Final smoke run: 8/8 green.
+
+**No dependencies were added** to `pyproject.toml` or `package.json`. Everything uses libraries
+already present (`httpx`, `redis`, `@tanstack/react-query`, `framer-motion`, `lucide-react`).
+
+**No schema/migration changes. No env vars are required** — `OLA_MAPS_API_KEY` is optional and
+intentionally unset.
+
+---
+
+## Failed attempts / dead ends
+
+### 1. Ola Maps requires a credit card — the marketing page is wrong
+
+The biggest dead end. Their site says *"No credit card required"* and *"Setup in under 5
+minutes"*, and I repeated that to the user. **It is not true.** Krutrim Cloud → Ola Maps →
+Offerings → **Credentials** opens a blocking modal:
+
+> **Setup Autopay** — Required to create and use credentials
+> To create API credentials, you need to register a credit card for automatic billing.
+> A ₹1 authorization charge will be made to verify your card
+
+**Do not send the user back to Ola expecting a free key.** The user declined the card and chose
+to stay on straight-line distance. This is recorded in `docs/LOCATION_AND_MAPS.md` §4.5 and in
+`backend/.env.example`.
+
+Alternatives investigated, none adopted:
+- **OpenRouteService** — `openrouteservice.org/plans/` 301-redirects to
+  `account.heigit.org/info/plans`, which is JS-rendered and returned no usable content via
+  WebFetch. Current terms **unverified**; may have the same card requirement.
+- **OSRM public demo** (`router.project-osrm.org`) — no key, no signup, but it is explicitly a
+  *demo* server and the project asks people not to run production traffic on it.
+
+### 2. Overpass fails intermittently — roughly one run in two
+
+First smoke run died with:
+
+```
+AssertionError: {"detail":"Nearby place search is temporarily unavailable"}
+```
+
+The query itself was fine — probing `https://overpass-api.de/api/interpreter` directly returned
+200 with real data. Overpass is volunteer-run and sheds load with 429/504 rather than queueing.
+**Fix applied:** `places.py` now tries `overpass-api.de` then `overpass.kumi.systems` before
+giving up, and the client timeout went 30 s → 40 s. Green on 3 runs since, but **if you see this
+error again it is upstream, not your code.**
+
+### 3. APIs.io: `sort=composite` silently discards relevance
+
+`find_providers(q="maps geocoding places routing", sort="composite")` returned **Stripe,
+HubSpot, Datadog, Zapier** — the sort replaces relevance ranking entirely rather than ordering
+within it. Tag filtering (`tags=["maps","geocoding",...]`) is also noisy — it surfaced Salesforce
+and ServiceNow as top "maps" providers.
+
+**What works:** `apis_io_search(q=...)` with default sort, or `find_providers` with
+`public=true` / `try_now=true` filters and no sort override.
+
+### 4. Ola's API reference is unreadable, so the parser is untested
+
+`maps.olakrutrim.com/docs/routing/distance-matrix` → **HTTP 404**. `/docs` renders a JS shell
+with no endpoint detail. So `_parse_ola()` in `travel.py` is written against the *documented
+Google-compatible* Distance Matrix shape and **has never run against a real response.** It
+accepts both `{"distance": {"value": n}}` and `{"distance": n}`, and returns `None` on anything
+unrecognised → falls back to haversine. If a key is ever added and `source` stays
+`straight_line`, this is the first thing to check.
+
+### 5. PowerShell here-strings mangle quotes in inline tool calls
+
+Passing `@'...'@` with embedded Python to the PowerShell tool stripped the double quotes:
+
+```
+File "<string>", line 5
+    print(QUERY:, q)
+               ^
+SyntaxError: invalid syntax
+```
+
+**Write the script to the scratchpad directory and run the file instead.** (The previous session
+hit the same class of bug with a stray `@` in a commit message.)
+
+### 6. The smoke test needs `PYTHONPATH`
+
+Plain `uv run python app/tests/test_enrichment_smoke.py` gives
+`ModuleNotFoundError: No module named 'app'`. Set `PYTHONPATH` to the backend dir — see Gotchas.
+
+### 7. `/apis-io-mcp-server:find_api` is not callable by the assistant
+
+The user asked me to use it twice. MCP *prompts* surface as slash commands only the user can
+type. Use the server's **tools** (`apis_io_search`, `find_apis`, `find_providers`, `get_api`)
+instead.
+
+### 8. There are no pet-domain APIs
+
+Searching the APIs.io catalog (1,700+ mapping APIs, 1,683 providers) for dog/cat/breed data
+returned **one** hit: a Swedish insurtech with no public API. Don't go looking again — breed data
+should be treated as PawSome's own seeded data.
+
+---
+
+## Next steps
+
+### Immediate
+
+1. **Look at the UI.** This is the top priority and the biggest gap — nothing was seen rendered.
+   Start the servers (see Gotchas), then check, in order:
+   - Open a chat → Playdates → does the OSM iframe in "Show in map" actually load?
+   - The Events grid — several badges were added to an already-dense card; check for overflow
+     and wrapping at a narrow viewport.
+   - Propose a playdate → "use my current location" → do nearby chips appear and fill the form?
+   - Reload Events → distance should now appear, with **no geolocation prompt**.
+   - Accept a playdate → download the `.ics` → does it import at the right local time?
+
+2. **Commit.** Nothing from this session is committed. **Submodule first, then parent**, or the
+   gitlink will dangle:
+   ```bash
+   cd /d/PawSome/frontend
+   git add -A && git commit -m "Add map links, weather, calendar export, nearby spots to cards"
+   cd /d/PawSome
+   git add backend docs handoff.md
+   git commit -m "Add location enrichment endpoints: conditions, places, travel"
+   ```
+   Decide separately what to do with the three pre-existing root `.md` deletions — they are not
+   part of this work.
+
+### Backlog
+
+3. **Push.** Parent is **20 commits ahead** of `origin/main` and the submodule **1**, all from
+   *previous* sessions — nothing has been pushed in a long time. Push submodule first.
+4. Consider a batch `/conditions` endpoint if a chat with many playdates feels slow. Currently
+   one request per distinct (park, hour); react-query dedupes identical keys and the backend
+   caches, so this may never be needed — measure before building.
+5. Consider swapping address autocomplete from Nominatim to a provider with better Indian
+   address quality. Deliberately excluded from this session: it changes a working, load-bearing
+   path (Nominatim's 1 req/s throttle is carefully tuned) and deserves its own change.
+6. Consider storing the venue's IANA timezone at write time (`docs/LOCATION_AND_MAPS.md` §4.3).
+   Only matters once PawSome crosses a timezone boundary, but it is far cheaper to add at write
+   time than to backfill.
+
+### Open questions
+
+- **None blocking.** The one decision point (Ola card) was resolved: the user declined, and
+  straight-line distance is the accepted end state. Don't reopen it unprompted.
+
+---
+
+## Gotchas
+
+### Running things
 
 ```bash
-cd frontend && git push origin main
-cd .. && git push origin main
+# Backend (needs Neon Postgres + Upstash Redis reachable)
+cd /d/PawSome/backend && uv run uvicorn app.main:app --reload
+
+# Frontend
+cd /d/PawSome/frontend && npm run dev
+
+# The smoke test — PYTHONPATH is REQUIRED
+cd /d/PawSome/backend
+PYTHONPATH=. uv run python app/tests/test_enrichment_smoke.py
+# PowerShell: $env:PYTHONPATH="D:\PawSome\backend"; uv run python app/tests/test_enrichment_smoke.py
+
+cd /d/PawSome/frontend && npm run build && npm run lint
 ```
+
+The smoke test hits **real** Open-Meteo and Overpass and needs Redis + the DB. It is not
+hermetic and it is not fast (~30 s).
+
+### Testing reality in this repo
+
+- **There is no frontend test framework at all.** No vitest, no jest, no `test` script.
+- **The backend pytest suite does not run.** `app/tests/test_matching_system.py` references
+  `db`/`client` fixtures, there is no `conftest.py` anywhere, and `pytest` is not in
+  `pyproject.toml`. The working pattern is standalone `httpx.ASGITransport` scripts run via
+  `uv run python` — which is what `test_enrichment_smoke.py` is.
+
+### Things that look wrong but are intentional
+
+- **No `/api/v1` prefix.** Routers mount at the app root, each carrying its own prefix.
+- **`useUserLocation` never asks for permission.** It only *reads* a position stored by
+  `LocationPicker`'s existing "use my current location" button. Distance therefore doesn't appear
+  until the user has volunteered their location once. Deliberate — a permission prompt fired
+  because a card scrolled into view is hostile. **Do not "fix" this by calling
+  `navigator.geolocation` in the badge.**
+- **`ConditionsBadge` and `DistanceBadge` render `null` while loading and on error.** No
+  skeleton, no error text. They are decorative; a weather outage must be invisible.
+- **`geocoding.py` was left alone** and still has its own local copy of the throttle/HTTP
+  plumbing rather than using `external_http.py`. It works, it's tuned for Nominatim's 1 req/s
+  policy, and its client-disconnect check exists for a real reason (abandoned autocomplete
+  keystrokes were eating the whole per-second budget).
+- **Map links use coordinates, never the address string.** Passing the address would let Google
+  re-geocode it to a different pin than the one the user picked.
+- **`cached_json` takes a `should_cache` predicate.** Loaders here degrade rather than raise, so
+  without it a single upstream blip gets cached as an empty result for the whole TTL.
+- **Weather horizon is 16 days, AQI is 7.** Both checked *before* any network call. A card
+  10 days out legitimately shows temperature with `us_aqi: null`.
+- **`/conditions` and `/travel/eta` use optional auth**; `/places/nearby` requires it. Events are
+  browsable signed out, so their cards must work anonymously.
+
+### Carried over from the previous session (still true)
+
+- **Seeded accounts** use password `123456789`; `arjun.reddy@example.com` is the demo account
+  (3 pets, 6 matches, live chats). 25 users across real Hyderabad localities — which is why the
+  smoke test uses KBR Park (17.4239, 78.4138) as its fixture: real coordinates with real parks
+  nearby for Overpass to find.
+- **`frontend` is a gitlink with no `.gitmodules` entry**, so `git submodule status` errors.
+  Pre-existing. Commit inside `frontend/` directly.
+- **Use `127.0.0.1`, not `localhost`,** in dev config. `localhost` resolves to `::1` first, the
+  backend binds IPv4 only, and Windows takes ~2 s to refuse the IPv6 attempt.
+- **11 pre-existing lint problems.** Don't chase them thinking this session caused them.
+
+### Windows specifics
+
+- `Bash` tool is Git Bash; `PowerShell` tool is Windows PowerShell 5.1 (no `&&`, no ternary).
+- vite's chunk-size warning gets wrapped by PowerShell as a `NativeCommandError` — the build
+  still succeeded. Check for `✓ built in`.
+- Scratch scripts belong in the session scratchpad, not `/tmp`.
