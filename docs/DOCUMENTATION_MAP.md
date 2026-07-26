@@ -11,6 +11,7 @@ PawSome/
 │   ├── QUICK_START.md
 │   ├── TROUBLESHOOTING.md
 │   ├── ARCHITECTURE.md
+│   ├── LOCATION_AND_MAPS.md
 │   ├── PORT_CONFIGURATION.md
 │   ├── FIXES_APPLIED.md
 │   └── RESTART_REQUIRED.txt
@@ -35,6 +36,7 @@ PawSome/
 | **Troubleshoot any problem** | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | **Understand system architecture** | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | **See what was fixed recently** | [docs/FIXES_APPLIED.md](docs/FIXES_APPLIED.md) |
+| **Work with maps, weather, or nearby places** | [docs/LOCATION_AND_MAPS.md](docs/LOCATION_AND_MAPS.md) |
 | **Learn about API endpoints** | [backend/docs/ENDPOINTS.md](backend/docs/ENDPOINTS.md) |
 | **Implement chat features** | [backend/docs/CHAT_API.md](backend/docs/CHAT_API.md) |
 | **Work with matching system** | [backend/docs/MATCHING_API.md](backend/docs/MATCHING_API.md) |
