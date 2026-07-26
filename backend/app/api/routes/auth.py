@@ -22,17 +22,20 @@ from app.core.database import get_db
 from fastapi import Depends
 from app.models.user import User
 from app.schemas.auth import (
+    ForgotPasswordOTPRequest,
     ForgotPasswordRequest,
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
     ResendVerificationRequest,
     ResetPasswordRequest,
+    ResetPasswordWithOTPRequest,
     SendCodeResponse,
     TokenResponse,
     UserResponse,
     VerifyCodeRequest,
     VerifyEmailRequest,
+    VerifyPasswordResetOTPRequest,
 )
 from app.services import email as email_service
 
@@ -306,6 +309,97 @@ async def forgot_password(
         await email_service.send_password_reset_email(user.email, token)
 
     return {"message": "If the email exists, a password reset link has been sent"}
+
+
+@router.post("/forgot-password-otp", response_model=SendCodeResponse)
+async def forgot_password_otp(
+    body: ForgotPasswordOTPRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Send a 6-digit OTP for password reset.
+    
+    Always returns success to prevent email enumeration.
+    """
+    result = await db.execute(select(User).where(func.lower(User.email) == body.email))
+    user = result.scalar_one_or_none()
+
+    delivered = False
+    if user:
+        code = await email_service.generate_password_reset_otp(redis, body.email)
+        delivered = await email_service.send_password_reset_otp_email(user.email, code)
+
+    return SendCodeResponse(
+        message="If the email exists, a password reset code has been sent",
+        retry_after_seconds=60,
+        delivered=delivered,
+    )
+
+
+@router.post("/verify-password-reset-otp", status_code=status.HTTP_200_OK)
+async def verify_password_reset_otp(
+    body: VerifyPasswordResetOTPRequest,
+    redis: Redis = Depends(get_redis),
+):
+    """Verify the OTP without resetting password yet.
+    
+    This allows the frontend to show the password reset form only after
+    the OTP is verified.
+    """
+    result = await email_service.verify_password_reset_otp(redis, body.email, body.code)
+
+    if result == email_service.OtpResult.EXPIRED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That code has expired. Request a new one.",
+        )
+    if result == email_service.OtpResult.TOO_MANY_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many incorrect attempts. Request a new code.",
+        )
+    if result != email_service.OtpResult.OK:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That code isn't right. Check the email and try again.",
+        )
+
+    return {"message": "Code verified successfully"}
+
+
+@router.post("/reset-password-with-otp", status_code=status.HTTP_200_OK)
+async def reset_password_with_otp(
+    body: ResetPasswordWithOTPRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Reset password using verified OTP"""
+    # Verify OTP again
+    result = await email_service.verify_password_reset_otp(redis, body.email, body.code)
+
+    if result != email_service.OtpResult.OK:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired code",
+        )
+
+    # Get user and update password
+    user_result = await db.execute(select(User).where(func.lower(User.email) == body.email))
+    user = user_result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    user.password_hash = hash_password(body.new_password)
+    await db.commit()
+
+    # Clear the OTP
+    await email_service.clear_password_reset_otp(redis, body.email)
+
+    return {"message": "Password has been reset successfully"}
 
 
 @router.post("/reset-password", status_code=status.HTTP_200_OK)

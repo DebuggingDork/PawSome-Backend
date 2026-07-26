@@ -44,6 +44,11 @@ OTP_RESEND_COOLDOWN = 60
 PASSWORD_RESET_TOKEN_EXPIRES = 1800
 PASSWORD_RESET_TOKEN_PREFIX = "password_reset:"
 
+PASSWORD_RESET_OTP_EXPIRES = 600  # 10 minutes
+PASSWORD_RESET_OTP_PREFIX = "password_reset_otp:"
+PASSWORD_RESET_OTP_ATTEMPTS_PREFIX = "password_reset_otp_attempts:"
+PASSWORD_RESET_OTP_MAX_ATTEMPTS = 5
+
 
 # ── Delivery ──────────────────────────────────────────────────────────────────
 
@@ -225,6 +230,25 @@ async def send_password_reset_email(email: str, token: str) -> bool:
     return await _send(email, "Reset your PawSome password", html, text)
 
 
+async def send_password_reset_otp_email(email: str, code: str) -> bool:
+    """Send a 6-digit OTP for password reset"""
+    html = _shell(
+        "Reset your password",
+        f"""
+    <p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:#a3a3a3;">
+      Enter this code to reset your PawSome password.
+    </p>
+    <p style="margin:0;padding:16px 24px;background:#0a0a0a;border:1px solid #262626;border-radius:12px;
+              font-size:32px;font-weight:700;letter-spacing:8px;text-align:center;color:#ffffff;">{code}</p>
+    <p style="margin:16px 0 0;font-size:13px;color:#737373;">This code expires in 10 minutes.</p>""",
+    )
+    text = (
+        f"Your PawSome password reset code is {code}\n"
+        f"It expires in 10 minutes.\n"
+    )
+    return await _send(email, f"{code} is your PawSome password reset code", html, text)
+
+
 async def generate_password_reset_token(redis: Redis, user_id: str) -> str:
     token = secrets.token_urlsafe(32)
     await redis.set(f"{PASSWORD_RESET_TOKEN_PREFIX}{token}", user_id, ex=PASSWORD_RESET_TOKEN_EXPIRES)
@@ -238,6 +262,45 @@ async def verify_password_reset_token(redis: Redis, token: str) -> str | None:
         await redis.delete(key)
         return user_id.decode() if isinstance(user_id, bytes) else user_id
     return None
+
+
+async def generate_password_reset_otp(redis: Redis, user_email: str) -> str:
+    """Issue a fresh 6-digit code for password reset"""
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    
+    await redis.set(f"{PASSWORD_RESET_OTP_PREFIX}{user_email}", code, ex=PASSWORD_RESET_OTP_EXPIRES)
+    await redis.delete(f"{PASSWORD_RESET_OTP_ATTEMPTS_PREFIX}{user_email}")
+    return code
+
+
+async def verify_password_reset_otp(redis: Redis, user_email: str, submitted: str) -> str:
+    """Verify OTP for password reset"""
+    key = f"{PASSWORD_RESET_OTP_PREFIX}{user_email}"
+    attempts_key = f"{PASSWORD_RESET_OTP_ATTEMPTS_PREFIX}{user_email}"
+
+    stored = await redis.get(key)
+    if stored is None:
+        return OtpResult.EXPIRED
+
+    attempts = await redis.incr(attempts_key)
+    if attempts == 1:
+        await redis.expire(attempts_key, PASSWORD_RESET_OTP_EXPIRES)
+    if attempts > PASSWORD_RESET_OTP_MAX_ATTEMPTS:
+        await redis.delete(key)
+        return OtpResult.TOO_MANY_ATTEMPTS
+
+    expected = stored.decode() if isinstance(stored, bytes) else stored
+    if not secrets.compare_digest(expected, submitted.strip()):
+        return OtpResult.INVALID
+
+    # Don't delete the code yet - we'll delete it after password is actually changed
+    return OtpResult.OK
+
+
+async def clear_password_reset_otp(redis: Redis, user_email: str) -> None:
+    """Clear the password reset OTP after successful password change"""
+    await redis.delete(f"{PASSWORD_RESET_OTP_PREFIX}{user_email}")
+    await redis.delete(f"{PASSWORD_RESET_OTP_ATTEMPTS_PREFIX}{user_email}")
 
 
 async def send_welcome_email(email: str, full_name: str | None) -> bool:

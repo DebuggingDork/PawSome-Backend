@@ -147,6 +147,36 @@ class ForgotPasswordRequest(BaseModel):
         return v.strip().lower()
 
 
+class ForgotPasswordOTPRequest(BaseModel):
+    email: EmailStr = Field(description="Email address to send the OTP to")
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class VerifyPasswordResetOTPRequest(BaseModel):
+    email: EmailStr = Field(description="Email address")
+    code: str = Field(min_length=6, max_length=6, description="6-digit OTP from email")
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class ResetPasswordWithOTPRequest(BaseModel):
+    email: EmailStr = Field(description="Email address")
+    code: str = Field(min_length=6, max_length=6, description="6-digit OTP from email")
+    new_password: str = Field(min_length=8, max_length=128, description="New password, at least 8 characters long")
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
 class ResetPasswordRequest(BaseModel):
     token: str = Field(min_length=1, description="Password reset token from email")
     new_password: str = Field(min_length=8, max_length=128, description="New password, at least 8 characters long")
