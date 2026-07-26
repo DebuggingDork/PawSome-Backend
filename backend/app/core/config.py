@@ -54,6 +54,27 @@ class Settings(BaseSettings):
         "", description="Public base URL for the bucket (r2.dev or custom domain)"
     )
 
+    # Brevo (transactional email). Empty API key keeps the app bootable without
+    # mail: send_* falls back to logging the code to the console, which is how
+    # local development worked before any provider existed.
+    brevo_api_key: str = Field("", description="Brevo v3 API key")
+    brevo_sender_email: str = Field(
+        "", description="Verified sender address in Brevo (a single verified mailbox is enough)"
+    )
+    brevo_sender_name: str = Field("PawSome", description="Display name on outgoing mail")
+
+    # Whether an unverified account is blocked from swiping and matching. Kept as a
+    # switch rather than hard-coded so a provider outage can be downgraded to a
+    # nag without a redeploy: mail delivery is outside our control, and locking
+    # every user out of the core feature is worse than a few unverified accounts.
+    require_email_verification: bool = Field(
+        True, description="Block swiping/matching until the email is verified"
+    )
+
+    @property
+    def email_configured(self) -> bool:
+        return bool(self.brevo_api_key and self.brevo_sender_email)
+
     @property
     def r2_configured(self) -> bool:
         return all([

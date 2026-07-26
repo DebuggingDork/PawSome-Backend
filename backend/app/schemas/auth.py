@@ -119,6 +119,21 @@ class ResendVerificationRequest(BaseModel):
         return v.strip().lower()
 
 
+class VerifyCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$", description="6-digit code from the email")
+
+
+class SendCodeResponse(BaseModel):
+    message: str
+    # Non-zero when the cooldown blocked this send, so the client can show a live
+    # countdown instead of guessing how long to disable the button for.
+    retry_after_seconds: int = Field(0, description="Seconds until another code may be requested")
+    # False when mail is unconfigured or the provider rejected it. The request still
+    # succeeds (the code exists in Redis), but the UI must say so rather than
+    # telling someone to check an inbox nothing was sent to.
+    delivered: bool = Field(True, description="Whether the provider accepted the message")
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr = Field(description="Email address to send the password reset link to")
 

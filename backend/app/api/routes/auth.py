@@ -28,8 +28,10 @@ from app.schemas.auth import (
     RegisterRequest,
     ResendVerificationRequest,
     ResetPasswordRequest,
+    SendCodeResponse,
     TokenResponse,
     UserResponse,
+    VerifyCodeRequest,
     VerifyEmailRequest,
 )
 from app.services import email as email_service
@@ -80,9 +82,12 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
-    # Send verification email
+    # Send the verification code. Delivery failures are logged, not raised: an
+    # account that exists but got no email can request another code, whereas a 500
+    # here would leave the user with no account and a password they think they set.
+    code = await email_service.generate_otp(redis, str(user.id))
     token = await email_service.generate_verification_token(redis, str(user.id))
-    email_service.send_verification_email(user.email, token)
+    await email_service.send_verification_email(user.email, code, token)
 
     return TokenResponse(
         access_token = create_access_token(user.id),
@@ -164,6 +169,89 @@ async def me(user: User = Depends(get_current_user)):
     return user
 
 
+async def _finish_verification(db: AsyncSession, user: User) -> None:
+    """Everything that happens once an address is proven, regardless of whether the
+    proof came from a typed code or a clicked link."""
+    user.is_verified = True
+    await db.commit()
+    await db.refresh(user)
+
+    await email_service.send_welcome_email(user.email, user.full_name)
+
+    from app.models.user_achievement import AchievementType
+    from app.services import achievements
+
+    await achievements.grant_achievement(db, user.id, AchievementType.VERIFIED_EMAIL)
+
+
+@router.post("/send-verification-code", response_model=SendCodeResponse)
+async def send_verification_code(
+    user: User = Depends(get_current_user),
+    redis: Redis = Depends(get_redis),
+):
+    """Mail a fresh 6-digit code to the signed-in user's address.
+
+    Authenticated rather than email-keyed, so it can't be used to probe which
+    addresses have accounts or to spam an address the caller doesn't own.
+    """
+    if user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already verified",
+        )
+
+    cooldown = await email_service.can_send_otp(redis, str(user.id))
+    if cooldown > 0:
+        return SendCodeResponse(
+            message="A code was just sent. Check your inbox.",
+            retry_after_seconds=cooldown,
+            delivered=True,
+        )
+
+    code = await email_service.generate_otp(redis, str(user.id))
+    token = await email_service.generate_verification_token(redis, str(user.id))
+    delivered = await email_service.send_verification_email(user.email, code, token)
+
+    return SendCodeResponse(
+        message="Verification code sent" if delivered else "Could not send the email just now",
+        retry_after_seconds=email_service.OTP_RESEND_COOLDOWN,
+        delivered=delivered,
+    )
+
+
+@router.post("/verify-code", response_model=UserResponse)
+async def verify_code(
+    body: VerifyCodeRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Confirm the signed-in user's address with the code from their email."""
+    if user.is_verified:
+        return user
+
+    result = await email_service.verify_otp(redis, str(user.id), body.code)
+
+    if result == email_service.OtpResult.EXPIRED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That code has expired. Request a new one.",
+        )
+    if result == email_service.OtpResult.TOO_MANY_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many incorrect attempts. Request a new code.",
+        )
+    if result != email_service.OtpResult.OK:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That code isn't right. Check the email and try again.",
+        )
+
+    await _finish_verification(db, user)
+    return user
+
+
 @router.post("/verify-email", response_model=UserResponse)
 async def verify_email(
     body: VerifyEmailRequest,
@@ -194,20 +282,8 @@ async def verify_email(
     if user.is_verified:
         # Already verified, that's okay
         return user
-    
-    user.is_verified = True
-    await db.commit()
-    await db.refresh(user)
-    
-    # Send welcome email
-    email_service.send_welcome_email(user.email, user.full_name)
-    
-    # Grant achievement
-    from app.models.user_achievement import AchievementType
-    from app.services import achievements
-    
-    await achievements.grant_achievement(db, user.id, AchievementType.VERIFIED_EMAIL)
-    
+
+    await _finish_verification(db, user)
     return user
 
 
@@ -227,7 +303,7 @@ async def forgot_password(
 
     if user:
         token = await email_service.generate_password_reset_token(redis, str(user.id))
-        email_service.send_password_reset_email(user.email, token)
+        await email_service.send_password_reset_email(user.email, token)
 
     return {"message": "If the email exists, a password reset link has been sent"}
 
@@ -274,18 +350,20 @@ async def resend_verification(
     )
     user = result.scalar_one_or_none()
 
-    if not user:
-        # Don't reveal if email exists for security
-        return {"message": "If the email exists, a verification link has been sent"}
-    
-    if user.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already verified",
-        )
-    
-    # Generate new token and send email
+    # One response for "no such account", "already verified" and "sent", so this
+    # endpoint can't be used to enumerate addresses. It previously 400'd on an
+    # already-verified account, which answered the question it was trying to hide.
+    if not user or user.is_verified:
+        return {"message": "If the email exists, a verification code has been sent"}
+
+    # Unauthenticated, so it shares the same per-user cooldown as the signed-in
+    # endpoint. Without that, anyone knowing an address could mail-bomb it.
+    cooldown = await email_service.can_send_otp(redis, str(user.id))
+    if cooldown > 0:
+        return {"message": "If the email exists, a verification code has been sent"}
+
+    code = await email_service.generate_otp(redis, str(user.id))
     token = await email_service.generate_verification_token(redis, str(user.id))
-    email_service.send_verification_email(user.email, token)
-    
-    return {"message": "Verification email sent"}
+    await email_service.send_verification_email(user.email, code, token)
+
+    return {"message": "If the email exists, a verification code has been sent"}

@@ -7,7 +7,7 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_verified_email
 from app.core.database import get_db
 from app.core.rate_limit import check_rate_limit
 from app.core.redis import get_redis
@@ -129,7 +129,10 @@ async def websocket_notifications(
 @router.post("/swipe", response_model=SwipeResponse)
 async def swipe_on_pet(
     body: SwipeRequest,
-    user: User = Depends(get_current_user),
+    # Swiping is the point at which a user starts appearing to strangers and can
+    # trigger notifications on someone else's account, so it's the natural place to
+    # require a proven address rather than blocking signup on mail delivery.
+    user: User = Depends(require_verified_email),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):

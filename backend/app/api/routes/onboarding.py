@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.pet_profile import PetProfile
 from app.models.user import User
@@ -41,11 +42,14 @@ async def get_onboarding_status(
         {
             "step": OnboardingStep.EMAIL_VERIFICATION,
             "title": "Verify Your Email",
-            "description": "Check your inbox and click the verification link",
+            "description": "Enter the code we emailed you",
             "completed": has_verified_email,
-            "required": False,  # Can skip but recommended
-            "action_url": "/api/v1/auth/resend-verification",
-            "action_text": "Resend Email",
+            # Required whenever the app actually enforces it on swiping, so the
+            # wizard can't tell someone a step is optional and then have Discover
+            # refuse to let them swipe.
+            "required": settings.require_email_verification,
+            "action_url": "/api/v1/auth/send-verification-code",
+            "action_text": "Send code",
         },
         {
             "step": OnboardingStep.PROFILE_BASICS,

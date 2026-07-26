@@ -4,6 +4,7 @@ from app.models.pet_profile import PetProfile
 from app.models.user import User
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from app.core.config import settings
 from app.core.security import verify_token, TOKEN_TYPE_ACCESS
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -70,6 +71,24 @@ async def get_current_user_optional(
 
     result = await db.execute(select(User).where(User.id == user_id))
     return result.scalar_one_or_none()
+
+
+async def require_verified_email(user: User = Depends(get_current_user)) -> User:
+    """Gate for actions that put a user in front of strangers (swiping, matching).
+
+    Returns 403 EMAIL_VERIFICATION_REQUIRED so the frontend can route to the
+    verification step instead of showing a generic permission error.
+
+    Honours settings.require_email_verification: mail delivery depends on a third
+    party, and if it breaks, downgrading this to a nag has to be a config change
+    rather than a redeploy.
+    """
+    if settings.require_email_verification and not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="EMAIL_VERIFICATION_REQUIRED",
+        )
+    return user
 
 
 async def get_owned_pet(
