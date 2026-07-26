@@ -3,7 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 
 def _parse_cors_origins(raw:str) -> list[str]:
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    # rstrip("/") because an Origin header is only ever scheme+host+port - a browser
+    # never sends a trailing slash, so "https://app.vercel.app/" in CORS_ORIGINS
+    # matches nothing and every request fails preflight. Pasting a URL from the
+    # address bar carries that slash, and the resulting 400 says nothing about it.
+    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
 
 def setup_cors(app:FastAPI) -> None:
     origins = _parse_cors_origins(settings.cors_origins)
