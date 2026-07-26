@@ -1,0 +1,25 @@
+# The image builds its own venv at /app/.venv. Copying a Windows-built one in
+# would shadow it with binaries that cannot run on Linux.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Secrets never belong in a layer. Render supplies these as env vars.
+.env
+.env.*
+!.env.example
+
+.git/
+.gitignore
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local-only helpers that would otherwise invalidate the cache on every edit.
+docs/
+*.md
+!README.md
+view_database.py
+test_*.py
