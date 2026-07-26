@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -86,6 +87,9 @@ class UserFullProfile(UserPrivateProfile):
     # Exact coordinates are owner-only (never surfaced on UserPublicProfile/UserPrivateProfile).
     latitude: float | None
     longitude: float | None
+    # Drives the "together for N days" line on the profile header. Owner-only:
+    # when someone signed up is nobody else's business.
+    created_at: datetime
 
     model_config = {
         "from_attributes": True,
