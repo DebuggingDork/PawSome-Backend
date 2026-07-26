@@ -41,11 +41,16 @@ every enrichment must degrade to nothing rather than break a card.
 
 ### NOT verified — read this before claiming anything renders
 
-**No UI was ever seen rendered this session.** No browser was opened. Every frontend change was
-verified by TypeScript compile + lint + reading only. Specifically unverified:
+**No UI has ever been seen rendered.** Still true after the follow-up session: the Claude
+browser extension was not connected (`list_connected_browsers` returned empty), so the browser
+could not be driven. Every frontend change is verified by TypeScript compile + lint + reading
+only. Specifically unverified:
 
-- Whether the OSM iframe preview actually displays (CSP, X-Frame-Options, ad blockers are all
-  plausible failure modes that a build cannot catch)
+- Whether the OSM iframe preview actually displays. **Partly narrowed since:** a direct request
+  to the exact embed URL `osmEmbedUrl()` builds returns `HTTP 200` with **no `X-Frame-Options`
+  and no `Content-Security-Policy` header at all**, so framing is permitted at the protocol
+  level. That eliminates two of the three suspected failure modes. Ad blockers are client-side
+  and still untested — as is whether the tiles actually paint.
 - Weather/AQI pill layout on a narrow card, and whether `EventCard` now overflows its grid tile
   — several badges were added to a card that was already dense
 - Whether the `.ics` download works in-browser and imports with the correct local time
@@ -62,10 +67,18 @@ verified by TypeScript compile + lint + reading only. Specifically unverified:
 
 ### Nothing is broken or in a bad intermediate state.
 
-### Uncommitted
+### Committed (follow-up session, 26 July 2026)
 
-**Everything from this session is uncommitted, in both repos.** Nothing was committed or
-pushed. See Changes made.
+**Everything is now committed in both repos. Nothing is pushed.**
+
+- `frontend` @ `d593910` — "Add map links, weather, calendar export and nearby spots to cards"
+- parent @ `72ecb68` — "Add location enrichment endpoints: conditions, places, travel"
+  (includes the frontend gitlink bump, `docs/LOCATION_AND_MAPS.md` and this file)
+- parent @ `7bf135d` — the three pre-existing root `.md` → `docs/` moves, committed
+  **separately** because they predate this work. Git recorded them as renames (100%/97%).
+
+Both working trees are clean. Parent is now **24 commits ahead** of `origin/main`
+(`git rev-list --count origin/main..main`), submodule **2** — see Next steps.
 
 ---
 
@@ -277,22 +290,14 @@ should be treated as PawSome's own seeded data.
    - Reload Events → distance should now appear, with **no geolocation prompt**.
    - Accept a playdate → download the `.ics` → does it import at the right local time?
 
-2. **Commit.** Nothing from this session is committed. **Submodule first, then parent**, or the
-   gitlink will dangle:
-   ```bash
-   cd /d/PawSome/frontend
-   git add -A && git commit -m "Add map links, weather, calendar export, nearby spots to cards"
-   cd /d/PawSome
-   git add backend docs handoff.md
-   git commit -m "Add location enrichment endpoints: conditions, places, travel"
-   ```
-   Decide separately what to do with the three pre-existing root `.md` deletions — they are not
-   part of this work.
+2. ~~**Commit.**~~ **Done** — see *Committed* above. Both trees are clean.
 
 ### Backlog
 
-3. **Push.** Parent is **20 commits ahead** of `origin/main` and the submodule **1**, all from
-   *previous* sessions — nothing has been pushed in a long time. Push submodule first.
+3. **Push.** Parent is **24 commits ahead** of `origin/main` and the submodule **2** — most from
+   *previous* sessions; nothing has been pushed in a long time. **Push the submodule first**, or
+   the parent's gitlink will point at a commit nobody else can fetch. Not done here: pushing is
+   outward-facing and was never authorised.
 4. Consider a batch `/conditions` endpoint if a chat with many playdates feels slow. Currently
    one request per distinct (park, hour); react-query dedupes identical keys and the backend
    caches, so this may never be needed — measure before building.
