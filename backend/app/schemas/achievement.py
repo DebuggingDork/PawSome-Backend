@@ -33,3 +33,7 @@ class AchievementSummary(BaseModel):
     completion_percentage: int
     badges: list[AchievementBadge]
     recent_achievements: list[AchievementResponse]
+    # Badges awarded by this very request, i.e. the user qualified for them but
+    # had not been given them yet. The client celebrates these; on the next read
+    # they are already held and the list is empty, so a badge is announced once.
+    newly_earned: list[AchievementBadge] = Field(default_factory=list)
