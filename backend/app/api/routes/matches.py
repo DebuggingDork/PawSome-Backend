@@ -1743,11 +1743,22 @@ async def browse_pets(
         )
         own_pet_ids = [row[0] for row in own_pets_result.all()]
 
-        # 5. Collect all pet IDs this pet has already swiped on
+        # 5. Collect all pet IDs this pet has already swiped on, keeping the
+        # passes separate and in the order they were passed. Passes are not a
+        # permanent exclusion — once the unseen pets run out they come back
+        # round, oldest pass first, so the deck keeps turning instead of
+        # dead-ending on "no pets available".
         swiped_result = await db.execute(
-            select(Swipe.target_pet_id).where(Swipe.swiper_pet_id == pet_id)
+            select(Swipe.target_pet_id, Swipe.action, Swipe.created_at)
+            .where(Swipe.swiper_pet_id == pet_id)
+            .order_by(Swipe.created_at)
         )
-        swiped_ids = {row[0] for row in swiped_result.all()}
+        swiped_ids: set[uuid.UUID] = set()
+        passed_order: list[uuid.UUID] = []
+        for target_id, action, _created_at in swiped_result.all():
+            swiped_ids.add(target_id)
+            if action == SwipeAction.SKIP:
+                passed_order.append(target_id)
 
         # ...plus everyone this pet is already matched with. Normally the swipe
         # that led to the match covers this, but a match made by *accepting* a
@@ -1760,8 +1771,12 @@ async def browse_pets(
                 or_(Match.pet1_id == pet_id, Match.pet2_id == pet_id),
             )
         )
+        matched_ids: set[uuid.UUID] = set()
         for pet1_id, pet2_id in matched_result.all():
-            swiped_ids.add(pet2_id if pet1_id == pet_id else pet1_id)
+            matched_ids.add(pet2_id if pet1_id == pet_id else pet1_id)
+        swiped_ids |= matched_ids
+        # A pass that later became a match must not be recycled.
+        passed_order = [pid for pid in passed_order if pid not in matched_ids]
 
     # 2. User location is optional now
     user_lat = current_user.latitude
@@ -1791,8 +1806,10 @@ async def browse_pets(
         # and the same handful of pets cycled forever.
         filters.append(PetProfile.species == my_pet.species)
 
-    if swiped_ids:
-        filters.append(PetProfile.id.notin_(swiped_ids))
+    # Held apart from the rest so the recycle query below can reuse every other
+    # filter (species, blocks, own pets, the user's own filter panel) while
+    # deliberately ignoring this one.
+    seen_filter = PetProfile.id.notin_(swiped_ids) if swiped_ids else None
 
     if species is not None:
         filters.append(PetProfile.species == species)
@@ -1822,14 +1839,35 @@ async def browse_pets(
     # old hard .limit(50) was applied *before* distance filtering and scoring, so
     # it silently truncated the catalogue and then ranked whatever survived —
     # pets beyond the first 50 rows were unreachable no matter how compatible.
+    fresh_filters = filters if seen_filter is None else [*filters, seen_filter]
     candidates_result = await db.execute(
         select(PetProfile)
         .options(selectinload(PetProfile.user))
-        .where(*filters)
+        .where(*fresh_filters)
         .order_by(PetProfile.created_at.desc(), PetProfile.id)
         .limit(CANDIDATE_POOL_SIZE)
     )
-    candidates = candidates_result.scalars().all()
+    candidates = list(candidates_result.scalars().all())
+
+    # Bring passed pets back round once the unseen ones are used up. They go on
+    # the end, in the order they were passed, so the deck cycles oldest-pass
+    # first rather than dead-ending on an empty state while dozens of pets the
+    # user merely scrolled past sit permanently out of reach. Everything else —
+    # matched, liked, blocked, own pets, the active filters — still applies, so
+    # only genuine "not now" decisions come back.
+    recycled_ids: set[uuid.UUID] = set()
+    if passed_order and len(candidates) < limit:
+        recycled_result = await db.execute(
+            select(PetProfile)
+            .options(selectinload(PetProfile.user))
+            .where(*filters, PetProfile.id.in_(passed_order))
+        )
+        by_id = {p.id: p for p in recycled_result.scalars().all()}
+        for passed_id in passed_order:
+            pet = by_id.get(passed_id)
+            if pet is not None:
+                candidates.append(pet)
+                recycled_ids.add(pet.id)
 
     if not candidates:
         filters_applied = {
@@ -1895,16 +1933,21 @@ async def browse_pets(
     # left equally-ranked pets in whatever order the database happened to return
     # them, so the deck appeared to reshuffle itself on every refetch. Pets with
     # no known distance sort last in both modes.
-    if my_pet is not None:
-        nearby.sort(
-            key=lambda x: (
-                -scores[x[0].id],
-                UNKNOWN_DISTANCE_KM if x[1] is None else x[1],
-                str(x[0].id),
-            )
-        )
-    else:
-        nearby.sort(key=lambda x: (UNKNOWN_DISTANCE_KM if x[1] is None else x[1], str(x[0].id)))
+    # Recycled cards always sort behind every fresh one, and among themselves
+    # keep the order they were passed in — oldest pass resurfaces first.
+    pass_rank = {pet_id: i for i, pet_id in enumerate(passed_order)}
+
+    def sort_key(entry):
+        pet, dist = entry
+        recycled = pet.id in recycled_ids
+        distance = UNKNOWN_DISTANCE_KM if dist is None else dist
+        if recycled:
+            return (1, pass_rank.get(pet.id, 0), 0.0, str(pet.id))
+        if my_pet is not None:
+            return (0, -scores[pet.id], distance, str(pet.id))
+        return (0, distance, 0.0, str(pet.id))
+
+    nearby.sort(key=sort_key)
 
     # Apply limit after ranking
     nearby = nearby[:limit]
@@ -1920,6 +1963,7 @@ async def browse_pets(
                 distance_km=None if dist is None else round(dist, 2),
                 calculated_at=now_utc,
                 compatibility_score=scores.get(pet.id),
+                previously_passed=pet.id in recycled_ids,
             )
         )
 

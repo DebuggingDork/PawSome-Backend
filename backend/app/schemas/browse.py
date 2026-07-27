@@ -11,6 +11,10 @@ class MatchCandidateResponse(BaseModel):
     distance_km: float | None
     calculated_at: datetime
     compatibility_score: int | None = None  # 0-100; only set when browsing with a pet_id
+    # True when this card is one the caller passed on earlier and is being shown
+    # again because the unseen pets ran out. The UI labels these so a familiar
+    # face doesn't read as a bug.
+    previously_passed: bool = False
 
 
 class BrowsePetsResponse(BaseModel):
