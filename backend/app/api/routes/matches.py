@@ -556,6 +556,56 @@ async def get_my_matches(
     return summaries
 
 
+@router.post("/unskip/{target_pet_id}", response_model=PetRelationshipResponse)
+async def unskip_pet(
+    target_pet_id: uuid.UUID,
+    pet_id: uuid.UUID | None = Query(
+        default=None, description="Which of your pets to unpass as; defaults to all of them"
+    ),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Undo a pass, putting the pet back in the deck.
+
+    Passing was a one-way door: the pet vanished from Discover and there was no
+    control anywhere to bring it back, so a mis-swipe outside the five-minute
+    undo window was permanent. Deleting the row (rather than flipping a flag) is
+    what browse actually reads, so the pet returns to the deck as though it had
+    never been seen.
+
+    Only passes are removed — a like is left alone, since it is already waiting
+    on the other owner's answer.
+    """
+    own_pets_result = await db.execute(
+        select(PetProfile.id).where(PetProfile.user_id == user.id)
+    )
+    own_pet_ids = [row[0] for row in own_pets_result.all()]
+
+    if pet_id is not None:
+        if pet_id not in own_pet_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Pet does not belong to you",
+            )
+        own_pet_ids = [pet_id]
+
+    if own_pet_ids:
+        await db.execute(
+            delete(Swipe).where(
+                Swipe.swiper_pet_id.in_(own_pet_ids),
+                Swipe.target_pet_id == target_pet_id,
+                Swipe.action == SwipeAction.SKIP,
+            )
+        )
+        await db.commit()
+
+    # Hand back the fresh relationship so the caller can re-render without a
+    # second round trip.
+    return await get_pet_relationship(
+        target_pet_id=target_pet_id, pet_id=pet_id, user=user, db=db
+    )
+
+
 @router.get("/relationship/{target_pet_id}", response_model=PetRelationshipResponse)
 async def get_pet_relationship(
     target_pet_id: uuid.UUID,
