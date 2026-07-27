@@ -64,14 +64,36 @@ class MatchWithPetDetails(BaseModel):
     your_pet: dict  # PetResponse
 
 
+class PetRelationshipEntry(BaseModel):
+    """Where one of the caller's pets stands with the pet being viewed."""
+
+    pet_id: UUID
+    name: str
+    primary_photo_url: str | None = None
+    is_active: bool
+    status: Literal["none", "liked", "skipped", "matched"]
+    match_id: UUID | None = None
+
+
 class PetRelationshipResponse(BaseModel):
-    """How the caller already stands with a given pet — drives whether the
-    Community card offers "Interested" or reports an existing match."""
+    """How the caller already stands with a given pet — drives whether a browse
+    surface offers "Interested", and on behalf of which pet.
+
+    `pets` carries one entry per eligible pet of the caller's, because an owner
+    with several pets has to be able to see and choose which one is showing
+    interest. A single collapsed status can't express "Rocky already liked them
+    but Bruno hasn't", which is exactly the state a two-pet owner is in.
+
+    `status` stays as the summary for the whole account, so simple callers that
+    only need "can I offer the button at all" don't have to reduce the list
+    themselves.
+    """
 
     pet_id: UUID
     status: Literal["none", "own", "liked", "skipped", "matched", "no_pet"]
     match_id: UUID | None = None
     your_pet_id: UUID | None = None
+    pets: list[PetRelationshipEntry] = []
 
 
 class NotificationResponse(BaseModel):

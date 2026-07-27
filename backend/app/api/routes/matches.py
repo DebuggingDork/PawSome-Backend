@@ -29,6 +29,7 @@ from app.schemas.match import (
     MatchSummaryResponse,
     NotificationResponse,
     NotificationWithDetails,
+    PetRelationshipEntry,
     PetRelationshipResponse,
     SuperWoofStatus,
     SwipeRequest,
@@ -520,15 +521,21 @@ async def get_pet_relationship(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Where the caller already stands with `target_pet_id`.
+    """Where the caller already stands with `target_pet_id`, per pet.
 
     Browse surfaces (Community, pet detail) need this to stop offering
     "Interested" on a pet that is already matched or already swiped on — the
-    swipe endpoint rejects those with a 400, which read as a broken button."""
+    swipe endpoint rejects those with a 400, which read as a broken button.
+
+    The per-pet breakdown exists because "Interested" is an action taken *by a
+    pet*, not by an account. An owner with two dogs has to be able to say which
+    one is interested, and to see that one of them already asked.
+    """
     own_pets_result = await db.execute(
-        select(PetProfile.id).where(PetProfile.user_id == user.id)
+        select(PetProfile).where(PetProfile.user_id == user.id)
     )
-    own_pet_ids = [row[0] for row in own_pets_result.all()]
+    own_pets = list(own_pets_result.scalars().all())
+    own_pet_ids = [p.id for p in own_pets]
 
     if target_pet_id in own_pet_ids:
         return PetRelationshipResponse(pet_id=target_pet_id, status="own")
@@ -539,46 +546,86 @@ async def get_pet_relationship(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Pet does not belong to you",
             )
-        own_pet_ids = [pet_id]
+        own_pets = [p for p in own_pets if p.id == pet_id]
 
-    if not own_pet_ids:
+    target_result = await db.execute(
+        select(PetProfile).where(PetProfile.id == target_pet_id)
+    )
+    target = target_result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pet not found")
+
+    # Only same-species pets can ever act on this target, so anything else would
+    # be an option the swipe endpoint is guaranteed to refuse.
+    candidates = [p for p in own_pets if p.species == target.species]
+    if not candidates:
         return PetRelationshipResponse(pet_id=target_pet_id, status="no_pet")
 
-    match_result = await db.execute(
+    candidate_ids = [p.id for p in candidates]
+
+    matches_result = await db.execute(
         select(Match).where(
             Match.deleted_at.is_(None),
             or_(
-                and_(Match.pet1_id.in_(own_pet_ids), Match.pet2_id == target_pet_id),
-                and_(Match.pet2_id.in_(own_pet_ids), Match.pet1_id == target_pet_id),
+                and_(Match.pet1_id.in_(candidate_ids), Match.pet2_id == target_pet_id),
+                and_(Match.pet2_id.in_(candidate_ids), Match.pet1_id == target_pet_id),
             ),
         )
     )
-    match = match_result.scalars().first()
-    if match is not None:
-        your_pet_id = match.pet1_id if match.pet1_id in set(own_pet_ids) else match.pet2_id
-        return PetRelationshipResponse(
-            pet_id=target_pet_id,
-            status="matched",
-            match_id=match.id,
-            your_pet_id=your_pet_id,
-        )
+    candidate_id_set = set(candidate_ids)
+    match_by_pet: dict[uuid.UUID, Match] = {}
+    for match in matches_result.scalars().all():
+        owner_side = match.pet1_id if match.pet1_id in candidate_id_set else match.pet2_id
+        match_by_pet[owner_side] = match
 
-    swipe_result = await db.execute(
+    swipes_result = await db.execute(
         select(Swipe).where(
-            Swipe.swiper_pet_id.in_(own_pet_ids),
+            Swipe.swiper_pet_id.in_(candidate_ids),
             Swipe.target_pet_id == target_pet_id,
             Swipe.is_undone.is_(False),
         )
     )
-    existing = swipe_result.scalars().first()
-    if existing is not None:
-        return PetRelationshipResponse(
-            pet_id=target_pet_id,
-            status="skipped" if existing.action == SwipeAction.SKIP else "liked",
-            your_pet_id=existing.swiper_pet_id,
+    swipe_by_pet = {s.swiper_pet_id: s for s in swipes_result.scalars().all()}
+
+    entries: list[PetRelationshipEntry] = []
+    for pet in candidates:
+        match = match_by_pet.get(pet.id)
+        if match is not None:
+            entry_status, match_id = "matched", match.id
+        else:
+            swipe = swipe_by_pet.get(pet.id)
+            match_id = None
+            if swipe is None:
+                entry_status = "none"
+            elif swipe.action == SwipeAction.SKIP:
+                entry_status = "skipped"
+            else:
+                entry_status = "liked"
+        entries.append(
+            PetRelationshipEntry(
+                pet_id=pet.id,
+                name=pet.name,
+                primary_photo_url=pet.primary_photo_url,
+                is_active=pet.is_active,
+                status=entry_status,
+                match_id=match_id,
+            )
         )
 
-    return PetRelationshipResponse(pet_id=target_pet_id, status="none")
+    # Summary for callers that only need one answer: a live match outranks a
+    # pending like, which outranks a pass.
+    for wanted in ("matched", "liked", "skipped"):
+        hit = next((e for e in entries if e.status == wanted), None)
+        if hit is not None:
+            return PetRelationshipResponse(
+                pet_id=target_pet_id,
+                status=wanted,
+                match_id=hit.match_id,
+                your_pet_id=hit.pet_id,
+                pets=entries,
+            )
+
+    return PetRelationshipResponse(pet_id=target_pet_id, status="none", pets=entries)
 
 
 @router.post("/{match_id}/unmatch", response_model=UnmatchResponse)
