@@ -33,25 +33,35 @@ QUALITY = 82
 UNSPLASH = "https://images.unsplash.com/{}?auto=format&fit=crop&q=80&w=2000"
 
 # name -> (source url, longest edge to store at)
-# Widths are chosen for how each image is actually used: full-bleed backgrounds
-# get 1600, cards and tiles far less.
 #
-# articleSocialising is not from Unsplash: the id the frontend had been pointing
-# at (photo-1537151608804-ea6f117398e0) now 404s, so that article card has been
-# rendering a broken image. Replaced with a dog.ceo photo, which is the same
-# source the seeded pets use.
+# This list got much shorter. Seven of the nine entries existed to dress the
+# landing page's card sections with stock photography: three article headers for
+# articles that were never written, two "featured pet" backdrops for pets who do
+# not exist, and one dog and one cat tile repeated three times each behind
+# invented captions. Those sections now render the real pets out of /pets, with
+# the photos their owners actually uploaded, so the stock imagery has nothing
+# left to do. The old objects are still in the bucket; nothing references them.
+#
+# What remains is the two places a photograph is genuinely doing a background's
+# job rather than standing in for content:
+#
+#   heroPets  the landing hero. Chosen for its composition as much as its
+#             subject: the light and both animals sit in the right half, and the
+#             left falls away into shadow on its own, so the headline column has
+#             somewhere dark to live without a scrim heavy enough to flatten the
+#             photo. The previous hero was centre-weighted, which is why it
+#             needed a near-opaque black wash over the left and ended up looking
+#             like a dark rectangle with text on it.
+#   duskRun   the Auth background and the landing's closing band. Unchanged
+#             image, renamed from heroDog now that it is no longer a hero.
+#
+# Both are Unsplash CDN slugs, not the short /photos/<id> links you get from the
+# website. unsplash.com/photos/<id>/download answers 403 to any client whose
+# User-Agent it does not like — including this script's — so resolve the slug
+# once with `curl -sL -o /dev/null -w '%{url_effective}'` and paste it here.
 IMAGES = {
-    "heroDog": (UNSPLASH.format("photo-1548199973-03cce0bbc87b"), 1600),
-    "articleVaccination": (UNSPLASH.format("photo-1629909613654-28e377c37b09"), 900),
-    "articleSocialising": (
-        "https://images.dog.ceo/breeds/retriever-golden/z6a_3963_200731.jpg",
-        900,
-    ),
-    "articleNutrition": (UNSPLASH.format("photo-1544568100-847a948585b9"), 900),
-    "featuredDog": (UNSPLASH.format("photo-1517849845537-4d257902454a"), 1200),
-    "featuredCat": (UNSPLASH.format("photo-1513360371669-4adf3dd7dff8"), 1200),
-    "toggleDog": (UNSPLASH.format("photo-1583337130417-3346a1be7dee"), 600),
-    "toggleCat": (UNSPLASH.format("photo-1514888286974-6c03e2ca1dba"), 600),
+    "heroPets": (UNSPLASH.format("photo-1711832740932-f7f3fe63cdd5"), 1800),
+    "duskRun": (UNSPLASH.format("photo-1548199973-03cce0bbc87b"), 1600),
 }
 
 
