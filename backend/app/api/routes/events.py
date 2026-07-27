@@ -56,11 +56,20 @@ def _eligible_pets(pets: list[PetProfile], event_species: str | None) -> list[Pe
     return [p for p in pets if p.species.value == event_species]
 
 
-async def _attendee_count(db: AsyncSession, event_id: uuid.UUID) -> int:
+async def _attendee_count(db: AsyncSession, event_id: uuid.UUID, host_user_id: uuid.UUID) -> int:
+    """RSVPs plus the host, who is attending by definition.
+
+    The host cannot RSVP to their own event, so counting rows alone reported a
+    brand new meetup as "0 going" when its organiser was plainly going. Any
+    host RSVP left over from before that rule is excluded rather than migrated
+    away, so it can't be counted twice.
+    """
     result = await db.execute(
-        select(func.count()).select_from(EventRSVP).where(EventRSVP.event_id == event_id)
+        select(func.count())
+        .select_from(EventRSVP)
+        .where(EventRSVP.event_id == event_id, EventRSVP.user_id != host_user_id)
     )
-    return result.scalar_one()
+    return result.scalar_one() + 1
 
 
 async def _to_response(
@@ -70,7 +79,7 @@ async def _to_response(
     viewer: User | None,
     viewer_pets: list[PetProfile] | None = None,
 ) -> EventResponse:
-    count = await _attendee_count(db, event.id)
+    count = await _attendee_count(db, event.id, event.creator_user_id)
 
     your_status: str | None = None
     if viewer is not None:
@@ -342,15 +351,14 @@ async def get_attendees(
     db: AsyncSession = Depends(get_db),
 ):
     event_result = await db.execute(select(Event).where(Event.id == event_id))
-    if event_result.scalar_one_or_none() is None:
+    event = event_result.scalar_one_or_none()
+    if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
     rsvps_result = await db.execute(
         select(EventRSVP).where(EventRSVP.event_id == event_id).order_by(EventRSVP.created_at.asc())
     )
     rsvps = rsvps_result.scalars().all()
-    if not rsvps:
-        return EventAttendeesResponse(items=[], total=0)
 
     user_ids = {r.user_id for r in rsvps}
     users_result = await db.execute(select(User).where(User.id.in_(user_ids)))
@@ -362,8 +370,28 @@ async def get_attendees(
         pets_result = await db.execute(select(PetProfile).where(PetProfile.id.in_(pet_ids)))
         pets_map = {p.id: p for p in pets_result.scalars().all()}
 
+    # The host heads the list — they are attending by definition and hold no
+    # RSVP row of their own, so they would otherwise be missing from the
+    # attendees of their own event.
     items = []
+    host_result = await db.execute(select(User).where(User.id == event.creator_user_id))
+    host = host_result.scalar_one_or_none()
+    if host is not None:
+        items.append(
+            AttendeeInfo(
+                user_id=host.id,
+                full_name=host.full_name,
+                profile_photo_url=host.profile_photo_url,
+                status="hosting",
+                pet=None,
+            )
+        )
+
     for r in rsvps:
+        # Skipped for the same reason the count skips it: a leftover host RSVP
+        # from before hosts were excluded would list them twice.
+        if r.user_id == event.creator_user_id:
+            continue
         attendee = users_map.get(r.user_id)
         if not attendee:
             continue
