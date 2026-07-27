@@ -59,8 +59,17 @@ UNSPLASH = "https://images.unsplash.com/{}?auto=format&fit=crop&q=80&w=2000"
 # website. unsplash.com/photos/<id>/download answers 403 to any client whose
 # User-Agent it does not like — including this script's — so resolve the slug
 # once with `curl -sL -o /dev/null -w '%{url_effective}'` and paste it here.
+# A source is either an http(s) URL or a path to a local file — anything not
+# starting with http is read off disk, so an image supplied directly still goes
+# through the same downscale and re-encode as the stock ones instead of being
+# dropped into the bucket at whatever size it arrived.
 IMAGES = {
-    "heroPets": (UNSPLASH.format("photo-1711832740932-f7f3fe63cdd5"), 1800),
+    # Supplied by the project owner, replacing the Unsplash frame that was here
+    # (photo-1711832740932-f7f3fe63cdd5).
+    "heroPets": (
+        r"C:\Users\Mani Mamidala\Downloads\Untitled - July 27, 2026 at 20.07.50 (2).png",
+        1800,
+    ),
     "duskRun": (UNSPLASH.format("photo-1548199973-03cce0bbc87b"), 1600),
 }
 
@@ -72,10 +81,25 @@ def main() -> int:
 
     with httpx.Client(headers={"User-Agent": "PawSome-Seeder/1.0"}) as client:
         for name, (source, max_edge) in IMAGES.items():
-            resp = client.get(source, timeout=90, follow_redirects=True)
-            resp.raise_for_status()
+            if source.lower().startswith("http"):
+                resp = client.get(source, timeout=90, follow_redirects=True)
+                resp.raise_for_status()
+                raw = resp.content
+            else:
+                path = Path(source)
+                if not path.is_file():
+                    print(f"  {name:22} SKIPPED — no such file: {path}")
+                    continue
+                raw = path.read_bytes()
 
-            with Image.open(io.BytesIO(resp.content)) as img:
+            with Image.open(io.BytesIO(raw)) as img:
+                # JPEG has no alpha, and converting RGBA straight to RGB
+                # composites transparency onto black — flatten onto white first.
+                if img.mode in ("RGBA", "LA", "P"):
+                    img = img.convert("RGBA")
+                    flat = Image.new("RGB", img.size, (255, 255, 255))
+                    flat.paste(img, mask=img.split()[-1])
+                    img = flat
                 img = img.convert("RGB")
                 img.thumbnail((max_edge, max_edge), Image.LANCZOS)
                 buf = io.BytesIO()
@@ -91,7 +115,7 @@ def main() -> int:
             )
             results[name] = public_url(key)
             total += len(payload)
-            print(f"  {name:22} {len(resp.content) // 1024:>5} KB -> {len(payload) // 1024:>4} KB")
+            print(f"  {name:22} {len(raw) // 1024:>5} KB -> {len(payload) // 1024:>4} KB")
 
     print(f"\n  stored {total / 1_048_576:.1f} MB total\n")
     print("-" * 72)
