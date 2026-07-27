@@ -19,7 +19,11 @@ connect_args = {
 
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.app_env == "development",
+    # Off unless explicitly asked for (SQL_ECHO=true). It was on for the whole
+    # of development, which printed every statement and its bind parameters —
+    # several screens per request — and buried the lines that say what actually
+    # went wrong. Turn it on deliberately when debugging a query.
+    echo=settings.sql_echo,
     connect_args=connect_args,
     pool_size=5,  # Number of connections to maintain
     max_overflow=10,  # Additional connections when pool is full

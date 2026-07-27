@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str
     redis_url: str = Field(..., description="Redis URL")
+    sql_echo: bool = Field(
+        False,
+        description="Log every SQL statement and its parameters. Very noisy — "
+        "opt in per debugging session rather than leaving it on.",
+    )
+    log_level: str = Field("INFO", description="Root log level (DEBUG/INFO/WARNING/ERROR)")
 
     jwt_secret: str = Field(..., description="JWT Secret")
     jwt_algorithm: str = Field("HS256", description="JWT Algorithm")
