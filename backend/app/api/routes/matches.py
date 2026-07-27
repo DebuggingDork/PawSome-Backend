@@ -69,6 +69,41 @@ CANDIDATE_POOL_SIZE = 500
 UNKNOWN_DISTANCE_KM = 1e9
 
 
+async def _open_match(db: AsyncSession, pet_a_id: uuid.UUID, pet_b_id: uuid.UUID) -> tuple[Match, bool]:
+    """Return the live match for a pair, creating or reviving one as needed.
+
+    `uq_match_pair` is unique on (pet1_id, pet2_id) with no regard for
+    deleted_at, so a pair that has ever matched already owns its row forever.
+    Inserting a second one raises IntegrityError — which is what every path
+    that only looked for a *live* match did, turning any rematch after an
+    unmatch into a 500.
+
+    Returns (match, is_new) where is_new is False when an existing live match
+    was found, so callers don't announce a match that was already there.
+    """
+    pet1_id, pet2_id = sorted([pet_a_id, pet_b_id])
+
+    existing_result = await db.execute(
+        select(Match).where(Match.pet1_id == pet1_id, Match.pet2_id == pet2_id)
+    )
+    existing = existing_result.scalar_one_or_none()
+
+    if existing is not None:
+        if existing.deleted_at is None:
+            return existing, False
+        # Reviving rather than inserting. The old messages come back with it —
+        # the row is the conversation — which is the right trade against
+        # destroying message history on an unmatch that might be reversed.
+        existing.deleted_at = None
+        existing.created_at = datetime.now(timezone.utc)
+        return existing, True
+
+    match = Match(pet1_id=pet1_id, pet2_id=pet2_id)
+    db.add(match)
+    await db.flush()
+    return match, True
+
+
 async def _push_notification(notification: Notification, other_pet: PetProfile) -> None:
     """Push a just-created Notification to its recipient over the live WS, if
     they're connected. The row is already saved either way — this only
@@ -308,20 +343,8 @@ async def swipe_on_pet(
     match_notifications: list[tuple[Notification, PetProfile]] = []
 
     if reciprocal_like is not None:
-        pet1_id, pet2_id = sorted([body.pet_id, body.target_pet_id])
-        existing_match_result = await db.execute(
-            select(Match).where(
-                Match.pet1_id == pet1_id,
-                Match.pet2_id == pet2_id,
-                Match.deleted_at.is_(None),
-            )
-        )
-        match = existing_match_result.scalar_one_or_none()
-        if match is None:
-            match = Match(pet1_id=pet1_id, pet2_id=pet2_id)
-            db.add(match)
-            await db.flush()
-
+        match, is_new_match = await _open_match(db, body.pet_id, body.target_pet_id)
+        if is_new_match:
             your_match_notif = Notification(
                 user_id=user.id,
                 notification_type=NotificationType.NEW_MATCH,
@@ -675,6 +698,26 @@ async def unmatch(
 
     now = datetime.now(timezone.utc)
     match.deleted_at = now
+
+    if not body.block_user:
+        # Plain unmatch means "not right now", not "never again", so the two
+        # pets go back to being discoverable to each other. The swipes that
+        # produced the match are what stopped that: browse and Discover both
+        # hide anyone you have already swiped on, so an unmatched pet stayed
+        # invisible in the deck for good, and the Community button behind it
+        # could only ever return "Already swiped on this pet". Clearing both
+        # directions puts the pair back to never having met.
+        #
+        # Blocking deliberately does not do this — those swipes stay, and the
+        # block filter keeps them out of each other's browse entirely.
+        await db.execute(
+            delete(Swipe).where(
+                or_(
+                    and_(Swipe.swiper_pet_id == your_pet.id, Swipe.target_pet_id == other_pet.id),
+                    and_(Swipe.swiper_pet_id == other_pet.id, Swipe.target_pet_id == your_pet.id),
+                )
+            )
+        )
 
     if body.block_user:
         existing_block_result = await db.execute(
@@ -1124,7 +1167,7 @@ async def accept_like(
             detail="Like notification not found",
         )
     
-    # Check if match already exists
+    # Check if a live match already exists
     pet1_id, pet2_id = sorted([notification.pet_id, notification.related_pet_id])
     existing_match = await db.execute(
         select(Match).where(
@@ -1133,7 +1176,7 @@ async def accept_like(
             Match.deleted_at.is_(None),
         )
     )
-    
+
     if existing_match.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1156,13 +1199,10 @@ async def accept_like(
             detail="One or both pets not found",
         )
     
-    # Create the match
-    match = Match(
-        pet1_id=pet1_id,
-        pet2_id=pet2_id,
-    )
-    db.add(match)
-    await db.flush()
+    # Create the match, or revive the pair's existing row if they had matched
+    # and unmatched before — uq_match_pair ignores deleted_at, so a plain insert
+    # raises IntegrityError for any pair with history.
+    match, _ = await _open_match(db, notification.pet_id, notification.related_pet_id)
     
     # Create match notifications for BOTH users
     # Notification for you (acceptor)
