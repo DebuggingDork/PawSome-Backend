@@ -48,12 +48,14 @@ async def verify_match_access(match_id: uuid.UUID, user: User, db: AsyncSession)
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
     
-    # Get user's pets in this match
+    # Get user's pets in this match. Ownership is the access rule here — the
+    # is_active filter that used to be on this query meant deactivating a pet
+    # locked its own owner out of conversations the other side could still see
+    # and send into, one-way chats being exactly the symptom that surfaced.
     user_pets = await db.execute(
         select(PetProfile.id).where(
             PetProfile.user_id == user.id,
             PetProfile.id.in_([match.pet1_id, match.pet2_id]),
-            PetProfile.is_active.is_(True),
         )
     )
     user_pet_ids = [row[0] for row in user_pets.all()]

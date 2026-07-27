@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -25,8 +26,10 @@ from app.services.notification_manager import manager as notification_manager
 from app.schemas.match import (
     MarkNotificationReadRequest,
     MatchResponse,
+    MatchSummaryResponse,
     NotificationResponse,
     NotificationWithDetails,
+    PetRelationshipResponse,
     SuperWoofStatus,
     SwipeRequest,
     SwipeResponse,
@@ -44,6 +47,8 @@ from app.schemas.undo import UndoSwipeRequest, UndoSwipeResponse
 from app.schemas.unmatch import UnmatchRequest, UnmatchResponse
 from app.utils.distance import haversine_distance
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(
     prefix="/matches",
     tags=["matches"],
@@ -53,11 +58,38 @@ router = APIRouter(
 SUPER_WOOF_LIMIT = 1
 SUPER_WOOF_WINDOW_SECONDS = 86400
 
+# How many rows the Discover deck pulls before ranking. Ranking has to see the
+# whole eligible pool or it just ranks an arbitrary prefix of it; the page size
+# is applied afterwards.
+CANDIDATE_POOL_SIZE = 500
+
+# Stand-in used for sorting and scoring when a real distance can't be computed,
+# large enough to sort after every genuine distance (the radius caps at 5000km).
+UNKNOWN_DISTANCE_KM = 1e9
+
 
 async def _push_notification(notification: Notification, other_pet: PetProfile) -> None:
     """Push a just-created Notification to its recipient over the live WS, if
     they're connected. The row is already saved either way — this only
-    affects how fast they find out."""
+    affects how fast they find out.
+
+    Best-effort by design: the delivery path goes through Redis, and a Redis
+    outage must not turn an otherwise-successful swipe or accept into a 500
+    *after* the database has already been committed. The failure is logged
+    loudly instead, because the visible symptom (no toast, no live badge) is
+    otherwise indistinguishable from the feature simply not working.
+    """
+    try:
+        await _broadcast_notification(notification, other_pet)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "live notification push FAILED (row %s is saved; recipient %s will "
+            "see it on next fetch): %s: %s",
+            notification.id, notification.user_id, type(exc).__name__, exc,
+        )
+
+
+async def _broadcast_notification(notification: Notification, other_pet: PetProfile) -> None:
     await notification_manager.broadcast_to_user(
         str(notification.user_id),
         {
@@ -160,13 +192,25 @@ async def swipe_on_pet(
         )
     )
     swiper_pet = swiper_result.scalar_one_or_none()
-    
-    if not swiper_pet:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Your pet not found or inactive",
+
+    # Every rejection below is logged with the reason and the ids involved.
+    # These all surface to the client as a bare 400/404, and a log full of
+    # "POST /matches/swipe 400" said nothing about which of the five distinct
+    # causes had fired — the species check in particular was rejecting an entire
+    # deck at a time with no trace of why.
+    def _reject(status_code: int, detail: str) -> HTTPException:
+        logger.warning(
+            "swipe rejected (%s): %s | user=%s swiper_pet=%s target_pet=%s action=%s",
+            status_code, detail, user.id, body.pet_id, body.target_pet_id, body.action,
         )
-    
+        return HTTPException(status_code=status_code, detail=detail)
+
+    if not swiper_pet:
+        raise _reject(
+            status.HTTP_404_NOT_FOUND,
+            "Your pet not found or inactive",
+        )
+
     # Verify target pet exists and is active
     target_result = await db.execute(
         select(PetProfile).where(
@@ -175,27 +219,28 @@ async def swipe_on_pet(
         )
     )
     target_pet = target_result.scalar_one_or_none()
-    
+
     if not target_pet:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Target pet not found or inactive",
+        raise _reject(
+            status.HTTP_404_NOT_FOUND,
+            "Target pet not found or inactive",
         )
-    
+
     # Can't swipe on your own pet
     if target_pet.user_id == user.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot swipe on your own pet",
+        raise _reject(
+            status.HTTP_400_BAD_REQUEST,
+            "Cannot swipe on your own pet",
         )
-    
+
     # Must be same species - inter-species matching not allowed
     if swiper_pet.species != target_pet.species:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Species mismatch: {swiper_pet.species} cannot match with {target_pet.species}",
+        raise _reject(
+            status.HTTP_400_BAD_REQUEST,
+            f"{swiper_pet.name} is a {swiper_pet.species.value} and {target_pet.name} "
+            f"is a {target_pet.species.value} — pets can only match within their own species.",
         )
-    
+
     # Check if already swiped on this pet
     existing_swipe = await db.execute(
         select(Swipe).where(
@@ -204,9 +249,9 @@ async def swipe_on_pet(
         )
     )
     if existing_swipe.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Already swiped on this pet",
+        raise _reject(
+            status.HTTP_400_BAD_REQUEST,
+            f"You have already swiped on {target_pet.name}.",
         )
 
     # Charge today's Super Woof allowance only once the swipe is actually
@@ -237,16 +282,75 @@ async def swipe_on_pet(
     )
     db.add(swipe)
 
-    # If it's a LIKE or SUPER_LIKE, send notification to target pet owner (no auto-match)
-    notification_target: Notification | None = None
+    # A like either completes a mutual pair (instant match) or waits for the
+    # other owner to accept it from "Likes you".
+    #
+    # Nothing used to close the mutual case, and /likes-received hides anyone
+    # you have already swiped on — so if A liked B and B then liked A from
+    # Discover, A vanished from B's "Likes you" list before B could ever accept,
+    # and no match could be created by either side again. Two people who both
+    # said yes were left with two notifications and no conversation.
+    reciprocal_like = None
     if body.action in ("like", "super_like"):
+        reciprocal_result = await db.execute(
+            select(Swipe).where(
+                Swipe.swiper_pet_id == body.target_pet_id,
+                Swipe.target_pet_id == body.pet_id,
+                Swipe.action.in_([SwipeAction.LIKE, SwipeAction.SUPER_LIKE]),
+                Swipe.is_undone.is_(False),
+            )
+        )
+        reciprocal_like = reciprocal_result.scalar_one_or_none()
+
+    notification_target: Notification | None = None
+    match: Match | None = None
+    match_notifications: list[tuple[Notification, PetProfile]] = []
+
+    if reciprocal_like is not None:
+        pet1_id, pet2_id = sorted([body.pet_id, body.target_pet_id])
+        existing_match_result = await db.execute(
+            select(Match).where(
+                Match.pet1_id == pet1_id,
+                Match.pet2_id == pet2_id,
+                Match.deleted_at.is_(None),
+            )
+        )
+        match = existing_match_result.scalar_one_or_none()
+        if match is None:
+            match = Match(pet1_id=pet1_id, pet2_id=pet2_id)
+            db.add(match)
+            await db.flush()
+
+            your_match_notif = Notification(
+                user_id=user.id,
+                notification_type=NotificationType.NEW_MATCH,
+                pet_id=body.pet_id,
+                related_pet_id=body.target_pet_id,
+                match_id=match.id,
+                message=f"It's a match! {swiper_pet.name} and {target_pet.name} both said yes!",
+            )
+            other_match_notif = Notification(
+                user_id=target_pet.user_id,
+                notification_type=NotificationType.NEW_MATCH,
+                pet_id=body.target_pet_id,
+                related_pet_id=body.pet_id,
+                match_id=match.id,
+                message=f"It's a match! {target_pet.name} and {swiper_pet.name} both said yes!",
+            )
+            db.add(your_match_notif)
+            db.add(other_match_notif)
+            match_notifications = [
+                (your_match_notif, target_pet),
+                (other_match_notif, swiper_pet),
+            ]
+    elif body.action in ("like", "super_like"):
         # Send "NEW_LIKE" notification to target pet owner
         notification_target = Notification(
             user_id=target_pet.user_id,
             notification_type=NotificationType.NEW_LIKE,
             pet_id=body.target_pet_id,
             related_pet_id=body.pet_id,
-            match_id=None,  # No match yet
+            match_id=None,  # No match yet — they accept or reject from "Likes you"
             message=(
                 f"🌟 {swiper_pet.name} Super Woofed {target_pet.name}!"
                 if is_super
@@ -275,13 +379,30 @@ async def swipe_on_pet(
         await db.refresh(notification_target)
         await _push_notification(notification_target, swiper_pet)
 
+    for notification, other_pet in match_notifications:
+        await db.refresh(notification)
+        await _push_notification(notification, other_pet)
+
+    if match is not None:
+        logger.info(
+            "match created from mutual like: match=%s %s(%s) <-> %s(%s)",
+            match.id, swiper_pet.name, body.pet_id, target_pet.name, body.target_pet_id,
+        )
+    elif notification_target is not None:
+        logger.info(
+            "%s sent: %s(%s) -> %s(%s), notified user=%s",
+            "super woof" if is_super else "like",
+            swiper_pet.name, body.pet_id, target_pet.name, body.target_pet_id,
+            target_pet.user_id,
+        )
+
     return SwipeResponse(
         id=swipe.id,
         swiper_pet_id=swipe.swiper_pet_id,
         target_pet_id=swipe.target_pet_id,
         action=swipe.action.value,
-        is_match=False,  # No auto-match anymore
-        match_id=None,
+        is_match=match is not None,
+        match_id=match.id if match is not None else None,
         created_at=swipe.created_at,
     )
 
@@ -302,29 +423,30 @@ async def get_super_woof_remaining(
     )
 
 
-@router.get("/my-matches", response_model=list[MatchResponse])
+@router.get("/my-matches", response_model=list[MatchSummaryResponse])
 async def get_my_matches(
     pet_id: uuid.UUID | None = Query(default=None, description="Filter by specific pet"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get all matches for the current user's pets.
+    Get all matches for the current user's pets, each with the other pet resolved.
     Optionally filter by a specific pet ID.
     """
-    
-    # Get user's pet IDs
+
+    # Every pet the caller owns, active or not. Filtering on is_active here hid
+    # a user's own conversations the moment they deactivated the pet that made
+    # the match, while the other side kept seeing the chat and could still send
+    # into it. Ownership is what decides access; activeness only decides whether
+    # a pet is discoverable.
     user_pets_result = await db.execute(
-        select(PetProfile.id).where(
-            PetProfile.user_id == user.id,
-            PetProfile.is_active.is_(True),
-        )
+        select(PetProfile.id).where(PetProfile.user_id == user.id)
     )
     user_pet_ids = [row[0] for row in user_pets_result.all()]
-    
+
     if not user_pet_ids:
         return []
-    
+
     # Filter by specific pet if provided
     if pet_id:
         if pet_id not in user_pet_ids:
@@ -333,7 +455,7 @@ async def get_my_matches(
                 detail="Pet does not belong to you",
             )
         user_pet_ids = [pet_id]
-    
+
     # Find matches where any of user's pets are involved
     matches_result = await db.execute(
         select(Match)
@@ -346,9 +468,117 @@ async def get_my_matches(
         )
         .order_by(Match.created_at.desc())
     )
-    
+
     matches = matches_result.scalars().all()
-    return [MatchResponse.model_validate(m) for m in matches]
+    if not matches:
+        return []
+
+    own_ids = set(user_pet_ids)
+    other_ids = {
+        (m.pet2_id if m.pet1_id in own_ids else m.pet1_id) for m in matches
+    }
+
+    # No is_active filter: a match with a since-deactivated pet is still a real
+    # conversation with real history, and dropping it here is what emptied the
+    # caller's entire Matches/Chat list before.
+    other_pets_result = await db.execute(
+        select(PetProfile)
+        .options(selectinload(PetProfile.user))
+        .where(PetProfile.id.in_(other_ids))
+    )
+    other_pets = {p.id: p for p in other_pets_result.scalars().all()}
+
+    summaries: list[MatchSummaryResponse] = []
+    for match in matches:
+        your_pet_id = match.pet1_id if match.pet1_id in own_ids else match.pet2_id
+        other_pet = other_pets.get(
+            match.pet2_id if match.pet1_id in own_ids else match.pet1_id
+        )
+        if other_pet is None:
+            # The pet row is gone entirely (hard delete) — nothing to show.
+            continue
+        summaries.append(
+            MatchSummaryResponse(
+                id=match.id,
+                pet1_id=match.pet1_id,
+                pet2_id=match.pet2_id,
+                created_at=match.created_at,
+                your_pet_id=your_pet_id,
+                other_pet=PetPublicResponse.model_validate(other_pet),
+            )
+        )
+
+    return summaries
+
+
+@router.get("/relationship/{target_pet_id}", response_model=PetRelationshipResponse)
+async def get_pet_relationship(
+    target_pet_id: uuid.UUID,
+    pet_id: uuid.UUID | None = Query(
+        default=None, description="Which of your pets to check as; defaults to all of them"
+    ),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Where the caller already stands with `target_pet_id`.
+
+    Browse surfaces (Community, pet detail) need this to stop offering
+    "Interested" on a pet that is already matched or already swiped on — the
+    swipe endpoint rejects those with a 400, which read as a broken button."""
+    own_pets_result = await db.execute(
+        select(PetProfile.id).where(PetProfile.user_id == user.id)
+    )
+    own_pet_ids = [row[0] for row in own_pets_result.all()]
+
+    if target_pet_id in own_pet_ids:
+        return PetRelationshipResponse(pet_id=target_pet_id, status="own")
+
+    if pet_id is not None:
+        if pet_id not in own_pet_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Pet does not belong to you",
+            )
+        own_pet_ids = [pet_id]
+
+    if not own_pet_ids:
+        return PetRelationshipResponse(pet_id=target_pet_id, status="no_pet")
+
+    match_result = await db.execute(
+        select(Match).where(
+            Match.deleted_at.is_(None),
+            or_(
+                and_(Match.pet1_id.in_(own_pet_ids), Match.pet2_id == target_pet_id),
+                and_(Match.pet2_id.in_(own_pet_ids), Match.pet1_id == target_pet_id),
+            ),
+        )
+    )
+    match = match_result.scalars().first()
+    if match is not None:
+        your_pet_id = match.pet1_id if match.pet1_id in set(own_pet_ids) else match.pet2_id
+        return PetRelationshipResponse(
+            pet_id=target_pet_id,
+            status="matched",
+            match_id=match.id,
+            your_pet_id=your_pet_id,
+        )
+
+    swipe_result = await db.execute(
+        select(Swipe).where(
+            Swipe.swiper_pet_id.in_(own_pet_ids),
+            Swipe.target_pet_id == target_pet_id,
+            Swipe.is_undone.is_(False),
+        )
+    )
+    existing = swipe_result.scalars().first()
+    if existing is not None:
+        return PetRelationshipResponse(
+            pet_id=target_pet_id,
+            status="skipped" if existing.action == SwipeAction.SKIP else "liked",
+            your_pet_id=existing.swiper_pet_id,
+        )
+
+    return PetRelationshipResponse(pet_id=target_pet_id, status="none")
 
 
 @router.post("/{match_id}/unmatch", response_model=UnmatchResponse)
@@ -901,7 +1131,38 @@ async def accept_like(
     # Mark the original like notification as read
     notification.is_read = True
     notification.read_at = datetime.now(timezone.utc)
-    
+
+    # Record the acceptance as a swipe from your pet onto theirs.
+    #
+    # Accepting is a "like" in every sense except that it never went through
+    # POST /swipe, so no Swipe row existed for this direction. Browse, Discover
+    # and "likes you" all decide what to show from the Swipe table, so a pet you
+    # had *just matched with* kept coming back as an un-swiped candidate with an
+    # "Interested" button that could only ever 400 with "Already swiped on this
+    # pet". reject_like already writes its SKIP for exactly this reason; accept
+    # was the half that got missed. An existing SKIP (rejected, then accepted
+    # from the same notification) is upgraded rather than duplicated — the
+    # (swiper, target) pair is unique.
+    reciprocal_result = await db.execute(
+        select(Swipe).where(
+            Swipe.swiper_pet_id == notification.pet_id,
+            Swipe.target_pet_id == notification.related_pet_id,
+        )
+    )
+    reciprocal = reciprocal_result.scalar_one_or_none()
+    if reciprocal is None:
+        db.add(
+            Swipe(
+                swiper_pet_id=notification.pet_id,
+                target_pet_id=notification.related_pet_id,
+                action=SwipeAction.LIKE,
+            )
+        )
+    else:
+        reciprocal.action = SwipeAction.LIKE
+        reciprocal.is_undone = False
+        reciprocal.undone_at = None
+
     await db.commit()
     await db.refresh(match)
     await db.refresh(your_match_notif)
@@ -1318,6 +1579,20 @@ async def browse_pets(
         )
         swiped_ids = {row[0] for row in swiped_result.all()}
 
+        # ...plus everyone this pet is already matched with. Normally the swipe
+        # that led to the match covers this, but a match made by *accepting* a
+        # like historically left no swipe row on the acceptor's side, so their
+        # own matches kept resurfacing in the deck. Reading the Match table too
+        # makes this correct for those existing rows without a backfill.
+        matched_result = await db.execute(
+            select(Match.pet1_id, Match.pet2_id).where(
+                Match.deleted_at.is_(None),
+                or_(Match.pet1_id == pet_id, Match.pet2_id == pet_id),
+            )
+        )
+        for pet1_id, pet2_id in matched_result.all():
+            swiped_ids.add(pet2_id if pet1_id == pet_id else pet1_id)
+
     # 2. User location is optional now
     user_lat = current_user.latitude
     user_lng = current_user.longitude
@@ -1326,11 +1601,18 @@ async def browse_pets(
     # 6. Build candidate query
     filters = [
         PetProfile.is_active.is_(True),
+        # Always, not just when a pet_id was passed. Without a pet_id this used
+        # to deal the caller their own pets into their own swipe deck.
+        PetProfile.user_id != current_user.id,
     ]
-    
-    # Only exclude own pets if pet_id was provided
-    if pet_id:
-        filters.append(PetProfile.user_id != current_user.id)
+
+    if my_pet is not None:
+        # Only same-species pets can be matched with — POST /swipe rejects
+        # anything else outright. Leaving them in the deck produced a stack of
+        # cards where every like and Super Woof came back a 400: the card was
+        # optimistically removed, the error put it straight back at the front,
+        # and the same handful of pets cycled forever.
+        filters.append(PetProfile.species == my_pet.species)
 
     if swiped_ids:
         filters.append(PetProfile.id.notin_(swiped_ids))
@@ -1359,8 +1641,16 @@ async def browse_pets(
     if is_trained is not None:
         filters.append(PetProfile.is_trained == is_trained)
 
+    # Cap the pool well above the page size and order it deterministically. The
+    # old hard .limit(50) was applied *before* distance filtering and scoring, so
+    # it silently truncated the catalogue and then ranked whatever survived —
+    # pets beyond the first 50 rows were unreachable no matter how compatible.
     candidates_result = await db.execute(
-        select(PetProfile).options(selectinload(PetProfile.user)).where(*filters).limit(50)
+        select(PetProfile)
+        .options(selectinload(PetProfile.user))
+        .where(*filters)
+        .order_by(PetProfile.created_at.desc(), PetProfile.id)
+        .limit(CANDIDATE_POOL_SIZE)
     )
     candidates = candidates_result.scalars().all()
 
@@ -1383,25 +1673,24 @@ async def browse_pets(
     owners_result = await db.execute(select(User).where(User.id.in_(owner_ids)))
     owners_map: dict = {u.id: u for u in owners_result.scalars().all()}
 
-    nearby: list[tuple[PetProfile, float]] = []
+    # Distance is None when it genuinely can't be computed — either the caller
+    # or the candidate's owner has no coordinates. Those pets are kept and
+    # ranked last instead of being dropped: an owner who skipped the location
+    # step was invisible to every located user, which is a large silent hole in
+    # a deck people already complain is too short.
+    nearby: list[tuple[PetProfile, float | None]] = []
 
-    if has_location:
-        # Calculate distances only if user has location
-        for pet in candidates:
-            owner = owners_map.get(pet.user_id)
-            if owner is None or owner.latitude is None or owner.longitude is None:
-                # Skip candidates whose owner has no location set
-                continue
+    for pet in candidates:
+        owner = owners_map.get(pet.user_id)
+        if owner is None:
+            continue
+        if has_location and owner.latitude is not None and owner.longitude is not None:
             dist = haversine_distance(user_lat, user_lng, owner.latitude, owner.longitude)
-            if dist <= radius:
-                nearby.append((pet, dist))
-    else:
-        # No location set, return all candidates with distance = 0
-        for pet in candidates:
-            owner = owners_map.get(pet.user_id)
-            if owner is None:
+            if dist > radius:
                 continue
-            nearby.append((pet, 0.0))
+            nearby.append((pet, dist))
+        else:
+            nearby.append((pet, None))
 
     # 8. Score + rank. With a pet_id, rank by compatibility (breed/distance/age/
     # gender preference) instead of plain distance — same scoring engine used
@@ -1417,11 +1706,28 @@ async def browse_pets(
             {"preferred_gender": preference.preferred_gender} if preference else None
         )
         for pet, dist in nearby:
-            score, _breakdown = calculate_match_score(my_pet, pet, dist, user_preferences)
+            # An unknown distance scores as "far" rather than crashing the
+            # comparison chain inside the scorer.
+            score, _breakdown = calculate_match_score(
+                my_pet, pet, UNKNOWN_DISTANCE_KM if dist is None else dist, user_preferences
+            )
             scores[pet.id] = score
-        nearby.sort(key=lambda x: scores[x[0].id], reverse=True)
+
+    # Rank by compatibility when browsing as a pet, by distance otherwise, and
+    # break ties on the pet's id. Sorting on the score (or the distance) alone
+    # left equally-ranked pets in whatever order the database happened to return
+    # them, so the deck appeared to reshuffle itself on every refetch. Pets with
+    # no known distance sort last in both modes.
+    if my_pet is not None:
+        nearby.sort(
+            key=lambda x: (
+                -scores[x[0].id],
+                UNKNOWN_DISTANCE_KM if x[1] is None else x[1],
+                str(x[0].id),
+            )
+        )
     else:
-        nearby.sort(key=lambda x: x[1])
+        nearby.sort(key=lambda x: (UNKNOWN_DISTANCE_KM if x[1] is None else x[1], str(x[0].id)))
 
     # Apply limit after ranking
     nearby = nearby[:limit]
@@ -1434,7 +1740,7 @@ async def browse_pets(
         response_candidates.append(
             MatchCandidateResponse(
                 pet=pet_dict,
-                distance_km=round(dist, 2),
+                distance_km=None if dist is None else round(dist, 2),
                 calculated_at=now_utc,
                 compatibility_score=scores.get(pet.id),
             )

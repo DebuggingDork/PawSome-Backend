@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.schemas.pet import PetPublicResponse
+
 
 class SwipeRequest(BaseModel):
     """Request to swipe on a pet"""
@@ -39,12 +41,37 @@ class MatchResponse(BaseModel):
     }
 
 
+class MatchSummaryResponse(MatchResponse):
+    """A match with the other side already resolved.
+
+    The Matches and Chat screens need the *other* pet for every match, and used
+    to fetch it themselves with one GET /pets/{id} per match. That endpoint only
+    serves active pets, so a single deactivated pet anywhere in the list took the
+    whole list down with it — every match vanished from both screens. Resolving
+    the pet here means one query instead of N requests, and a pet whose owner has
+    since deactivated it still renders (the conversation and its history are
+    real either way)."""
+
+    your_pet_id: UUID
+    other_pet: PetPublicResponse
+
+
 class MatchWithPetDetails(BaseModel):
     """Match with full pet details for display"""
     id: UUID
     created_at: datetime
     matched_pet: dict  # PetPublicResponse
     your_pet: dict  # PetResponse
+
+
+class PetRelationshipResponse(BaseModel):
+    """How the caller already stands with a given pet — drives whether the
+    Community card offers "Interested" or reports an existing match."""
+
+    pet_id: UUID
+    status: Literal["none", "own", "liked", "skipped", "matched", "no_pet"]
+    match_id: UUID | None = None
+    your_pet_id: UUID | None = None
 
 
 class NotificationResponse(BaseModel):
