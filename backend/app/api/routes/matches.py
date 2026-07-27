@@ -284,14 +284,21 @@ async def swipe_on_pet(
             f"is a {target_pet.species.value} — pets can only match within their own species.",
         )
 
-    # Check if already swiped on this pet
-    existing_swipe = await db.execute(
+    # Already swiped? A pass is not a final answer — it just means "not now",
+    # and the deck brings passed pets back round once the fresh ones run out, so
+    # a second look has to be allowed to change the decision. Re-deciding
+    # updates the existing row rather than inserting (uq_swipe_pair is unique on
+    # the pair). A like is final in the other direction: it is already sitting
+    # in someone's "likes you" list waiting on them, so re-swiping it is refused
+    # as before.
+    existing_swipe_result = await db.execute(
         select(Swipe).where(
             Swipe.swiper_pet_id == body.pet_id,
             Swipe.target_pet_id == body.target_pet_id,
         )
     )
-    if existing_swipe.scalar_one_or_none():
+    existing_swipe = existing_swipe_result.scalar_one_or_none()
+    if existing_swipe is not None and existing_swipe.action != SwipeAction.SKIP:
         raise _reject(
             status.HTTP_400_BAD_REQUEST,
             f"You have already swiped on {target_pet.name}.",
@@ -311,19 +318,26 @@ async def swipe_on_pet(
             window=SUPER_WOOF_WINDOW_SECONDS,
         )
 
-    # Create the swipe
+    # Create the swipe, or overwrite the pass that was there before.
     action_map = {
         "like": SwipeAction.LIKE,
         "skip": SwipeAction.SKIP,
         "super_like": SwipeAction.SUPER_LIKE,
     }
     is_super = body.action == "super_like"
-    swipe = Swipe(
-        swiper_pet_id=body.pet_id,
-        target_pet_id=body.target_pet_id,
-        action=action_map[body.action],
-    )
-    db.add(swipe)
+    if existing_swipe is not None:
+        swipe = existing_swipe
+        swipe.action = action_map[body.action]
+        swipe.created_at = datetime.now(timezone.utc)
+        swipe.is_undone = False
+        swipe.undone_at = None
+    else:
+        swipe = Swipe(
+            swiper_pet_id=body.pet_id,
+            target_pet_id=body.target_pet_id,
+            action=action_map[body.action],
+        )
+        db.add(swipe)
 
     # A like either completes a mutual pair (instant match) or waits for the
     # other owner to accept it from "Likes you".
