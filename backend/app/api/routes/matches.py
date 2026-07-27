@@ -144,6 +144,12 @@ async def _broadcast_notification(notification: Notification, other_pet: PetProf
                     "name": other_pet.name,
                     "primary_photo_url": other_pet.primary_photo_url,
                 },
+                # Which of the recipient's pets this is about. The REST
+                # notification list has always carried it; the live push did
+                # not, so the match celebration had to guess and showed the
+                # account's first pet — the wrong animal entirely whenever the
+                # match belonged to any of the others.
+                "your_pet_id": str(notification.pet_id),
             },
         },
     )
