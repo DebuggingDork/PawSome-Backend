@@ -587,6 +587,15 @@ async def get_pet_relationship(
     )
     swipe_by_pet = {s.swiper_pet_id: s for s in swipes_result.scalars().all()}
 
+    favorites_result = await db.execute(
+        select(Favorite).where(
+            Favorite.pet_id.in_(candidate_ids),
+            Favorite.target_pet_id == target_pet_id,
+            Favorite.deleted_at.is_(None),
+        )
+    )
+    favorite_by_pet = {f.pet_id: f for f in favorites_result.scalars().all()}
+
     entries: list[PetRelationshipEntry] = []
     for pet in candidates:
         match = match_by_pet.get(pet.id)
@@ -601,6 +610,7 @@ async def get_pet_relationship(
                 entry_status = "skipped"
             else:
                 entry_status = "liked"
+        favorite = favorite_by_pet.get(pet.id)
         entries.append(
             PetRelationshipEntry(
                 pet_id=pet.id,
@@ -609,6 +619,8 @@ async def get_pet_relationship(
                 is_active=pet.is_active,
                 status=entry_status,
                 match_id=match_id,
+                is_favorite=favorite is not None,
+                favorite_id=favorite.id if favorite else None,
             )
         )
 

@@ -73,6 +73,11 @@ class PetRelationshipEntry(BaseModel):
     is_active: bool
     status: Literal["none", "liked", "skipped", "matched"]
     match_id: UUID | None = None
+    # Favourites are per-pet bookmarks too, and a browse surface needs the
+    # current state to render a toggle rather than a write-only button. The id
+    # is what DELETE /favorites/{id} takes.
+    is_favorite: bool = False
+    favorite_id: UUID | None = None
 
 
 class PetRelationshipResponse(BaseModel):
