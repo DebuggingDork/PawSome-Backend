@@ -17,6 +17,7 @@ from app.schemas.event import (
     EventCreate,
     EventCreatorInfo,
     EventListResponse,
+    EventPetOption,
     EventResponse,
     EventRSVPRequest,
     EventRSVPResponse,
@@ -26,26 +27,33 @@ from app.schemas.event import (
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-async def _eligible_pets(
-    db: AsyncSession, viewer: User | None, event_species: str | None
-) -> list[PetProfile]:
-    """The viewer's pets that may actually attend this event.
+async def _viewer_pets(db: AsyncSession, viewer: User | None) -> list[PetProfile]:
+    """The viewer's usable pet profiles, loaded once per request.
 
-    Active only (a pet without a photo isn't a usable profile yet) and, for a
-    species-restricted event, only that species. An owner with a dog and a cat
-    is eligible for a dogs-only meetup — they simply bring the dog.
+    Active only — a pet without a photo isn't a profile anyone can bring yet.
+    Read once and filtered per event in memory, because the list endpoint
+    renders many events for the same viewer and re-querying per card would be a
+    query per event for an answer that cannot change between them.
     """
     if viewer is None:
         return []
-
-    filters = [PetProfile.user_id == viewer.id, PetProfile.is_active.is_(True)]
-    if event_species is not None:
-        filters.append(PetProfile.species == event_species)
-
     result = await db.execute(
-        select(PetProfile).where(*filters).order_by(PetProfile.created_at)
+        select(PetProfile)
+        .where(PetProfile.user_id == viewer.id, PetProfile.is_active.is_(True))
+        .order_by(PetProfile.created_at)
     )
     return list(result.scalars().all())
+
+
+def _eligible_pets(pets: list[PetProfile], event_species: str | None) -> list[PetProfile]:
+    """Which of those pets may attend a given event.
+
+    An owner with a dog and a cat is eligible for a dogs-only meetup — they
+    simply bring the dog.
+    """
+    if event_species is None:
+        return pets
+    return [p for p in pets if p.species.value == event_species]
 
 
 async def _attendee_count(db: AsyncSession, event_id: uuid.UUID) -> int:
@@ -56,7 +64,11 @@ async def _attendee_count(db: AsyncSession, event_id: uuid.UUID) -> int:
 
 
 async def _to_response(
-    event: Event, creator: User, db: AsyncSession, viewer: User | None
+    event: Event,
+    creator: User,
+    db: AsyncSession,
+    viewer: User | None,
+    viewer_pets: list[PetProfile] | None = None,
 ) -> EventResponse:
     count = await _attendee_count(db, event.id)
 
@@ -69,6 +81,21 @@ async def _to_response(
         )
         row = rsvp_result.first()
         your_status = row[0] if row else None
+
+    is_host = viewer is not None and event.creator_user_id == viewer.id
+    pets = viewer_pets if viewer_pets is not None else await _viewer_pets(db, viewer)
+    eligible = _eligible_pets(pets, event.species)
+
+    blocked_reason: str | None = None
+    can_rsvp = False
+    if viewer is not None and not is_host and event.cancelled_at is None:
+        if event.species is not None and not eligible:
+            blocked_reason = (
+                f"This meetup is for {event.species}s only — you don't have a "
+                f"{event.species} profile yet."
+            )
+        else:
+            can_rsvp = True
 
     return EventResponse(
         id=event.id,
@@ -86,6 +113,10 @@ async def _to_response(
         is_cancelled=event.cancelled_at is not None,
         your_rsvp_status=your_status,
         created_at=event.created_at,
+        is_host=is_host,
+        can_rsvp=can_rsvp,
+        rsvp_blocked_reason=blocked_reason,
+        eligible_pets=[EventPetOption.model_validate(p) for p in eligible],
     )
 
 
@@ -149,7 +180,11 @@ async def list_events(
     creators_result = await db.execute(select(User).where(User.id.in_(creator_ids)))
     creators_map = {c.id: c for c in creators_result.scalars().all()}
 
-    items = [await _to_response(e, creators_map[e.creator_user_id], db, user) for e in events]
+    viewer_pets = await _viewer_pets(db, user)
+    items = [
+        await _to_response(e, creators_map[e.creator_user_id], db, user, viewer_pets)
+        for e in events
+    ]
     return EventListResponse(items=items, total=total, limit=limit, offset=offset)
 
 
@@ -244,7 +279,7 @@ async def rsvp_to_event(
     # A species-restricted event can only be attended by someone bringing that
     # species. Nothing checked this at all, so a cat-only owner could RSVP to a
     # dogs-only meetup and only find out on the day.
-    eligible = await _eligible_pets(db, user, event.species)
+    eligible = _eligible_pets(await _viewer_pets(db, user), event.species)
     if event.species is not None and not eligible:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

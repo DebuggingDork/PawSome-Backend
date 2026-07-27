@@ -39,6 +39,17 @@ class EventCreatorInfo(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class EventPetOption(BaseModel):
+    """One of the viewer's pets that is allowed to attend this event."""
+
+    id: UUID
+    name: str
+    species: str
+    primary_photo_url: str | None
+
+    model_config = {"from_attributes": True}
+
+
 class EventResponse(BaseModel):
     id: UUID
     title: str
@@ -55,6 +66,17 @@ class EventResponse(BaseModel):
     is_cancelled: bool
     your_rsvp_status: str | None
     created_at: datetime
+
+    # Everything the card needs to decide what to offer, so it never puts up a
+    # button whose only possible outcome is a 400.
+    is_host: bool = False
+    can_rsvp: bool = False
+    # Why not, when can_rsvp is False and the viewer isn't the host — written
+    # for display.
+    rsvp_blocked_reason: str | None = None
+    # Which pets the viewer could bring. Drives the "who's coming" picker in the
+    # confirmation step, and is empty when they have none of the right species.
+    eligible_pets: list[EventPetOption] = []
 
 
 class EventListResponse(BaseModel):
