@@ -205,6 +205,11 @@ async def websocket_chat(
                                 # when rendering live messages (reactions/is_read).
                                 "is_read": False,
                                 "reactions": [],
+                                # Echoed back untouched so the sender can match this
+                                # against the copy it drew optimistically and swap in
+                                # the real row, instead of guessing by content and
+                                # risking a duplicate bubble for a repeated message.
+                                "client_id": message_data.get("client_id"),
                             }
                         }
                         await manager.broadcast_message(match_id, broadcast_data)
