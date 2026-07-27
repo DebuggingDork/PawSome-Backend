@@ -21,6 +21,7 @@ from app.models.pet_profile import PetProfile
 from app.models.swipe import Swipe, SwipeAction
 from app.models.user import User
 from app.services.block_cache import cache_block
+from app.services.blocks import get_blocked_user_ids
 from app.services.match_scoring import calculate_match_score
 from app.services.notification_manager import manager as notification_manager
 from app.schemas.match import (
@@ -1704,6 +1705,13 @@ async def browse_pets(
         # to deal the caller their own pets into their own swipe deck.
         PetProfile.user_id != current_user.id,
     ]
+
+    # Blocked in either direction. Nothing checked this before, so blocking
+    # someone left their pets in your deck and yours in theirs — the deck being
+    # the most likely place to run into them again.
+    blocked_user_ids = await get_blocked_user_ids(db, current_user.id)
+    if blocked_user_ids:
+        filters.append(PetProfile.user_id.notin_(blocked_user_ids))
 
     if my_pet is not None:
         # Only same-species pets can be matched with — POST /swipe rejects

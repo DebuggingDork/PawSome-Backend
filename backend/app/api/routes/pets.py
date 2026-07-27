@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.models.match import Match
 from app.models.pet_profile import PetProfile, PetSpecies
 from app.models.user import User
+from app.services.blocks import get_blocked_user_ids
 from app.schemas.pet import (
     PetCreate,
     PetListResponse,
@@ -48,6 +49,13 @@ async def browse_pets(
     filters = [PetProfile.is_active.is_(True)]
 
     if user is not None:
+        # Blocked in either direction: their pets never appear here again. This
+        # is what separates blocking from a plain unmatch, which puts the pair
+        # back in each other's decks.
+        blocked_user_ids = await get_blocked_user_ids(db, user.id)
+        if blocked_user_ids:
+            filters.append(PetProfile.user_id.notin_(blocked_user_ids))
+
         own_pets_result = await db.execute(
             select(PetProfile.id).where(PetProfile.user_id == user.id)
         )
