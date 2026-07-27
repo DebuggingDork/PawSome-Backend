@@ -2,12 +2,13 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_current_user_optional, get_owned_pet_any
 from app.core.database import get_db
+from app.models.match import Match
 from app.models.pet_profile import PetProfile, PetSpecies
 from app.models.user import User
 from app.schemas.pet import (
@@ -39,8 +40,37 @@ async def browse_pets(
     """Browsable directory of active pets — viewable without an account, like
     the pet's own detail page. Coordinates are never exposed here. Owner info
     (name, occupation, profile photo) is only attached for signed-in requests;
-    anonymous visitors see the pet but not who owns it."""
+    anonymous visitors see the pet but not who owns it.
+
+    Pets the signed-in caller has already matched with are left out: that
+    conversation lives in Matches/Chat now, and leaving them in the directory
+    meant being offered "Interested" on a pet you are already talking to."""
     filters = [PetProfile.is_active.is_(True)]
+
+    if user is not None:
+        own_pets_result = await db.execute(
+            select(PetProfile.id).where(PetProfile.user_id == user.id)
+        )
+        own_pet_ids = [row[0] for row in own_pets_result.all()]
+        if own_pet_ids:
+            matched_result = await db.execute(
+                select(Match.pet1_id, Match.pet2_id).where(
+                    Match.deleted_at.is_(None),
+                    or_(
+                        Match.pet1_id.in_(own_pet_ids),
+                        Match.pet2_id.in_(own_pet_ids),
+                    ),
+                )
+            )
+            own = set(own_pet_ids)
+            matched_ids = {
+                (pet2_id if pet1_id in own else pet1_id)
+                for pet1_id, pet2_id in matched_result.all()
+            }
+            # Guard against a self-match row ever excluding the caller's own pet.
+            matched_ids -= own
+            if matched_ids:
+                filters.append(PetProfile.id.notin_(matched_ids))
 
     if species is not None:
         filters.append(PetProfile.species == species)
