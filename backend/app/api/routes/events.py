@@ -26,6 +26,28 @@ from app.schemas.event import (
 router = APIRouter(prefix="/events", tags=["events"])
 
 
+async def _eligible_pets(
+    db: AsyncSession, viewer: User | None, event_species: str | None
+) -> list[PetProfile]:
+    """The viewer's pets that may actually attend this event.
+
+    Active only (a pet without a photo isn't a usable profile yet) and, for a
+    species-restricted event, only that species. An owner with a dog and a cat
+    is eligible for a dogs-only meetup — they simply bring the dog.
+    """
+    if viewer is None:
+        return []
+
+    filters = [PetProfile.user_id == viewer.id, PetProfile.is_active.is_(True)]
+    if event_species is not None:
+        filters.append(PetProfile.species == event_species)
+
+    result = await db.execute(
+        select(PetProfile).where(*filters).order_by(PetProfile.created_at)
+    )
+    return list(result.scalars().all())
+
+
 async def _attendee_count(db: AsyncSession, event_id: uuid.UUID) -> int:
     result = await db.execute(
         select(func.count()).select_from(EventRSVP).where(EventRSVP.event_id == event_id)
@@ -210,12 +232,37 @@ async def rsvp_to_event(
     if not event or event.cancelled_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
+    # The host is attending by definition — they are the one putting it on.
+    # Letting them RSVP to their own event meant they could mark themselves as
+    # not going to a meetup they were hosting, and be counted twice.
+    if event.creator_user_id == user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You're hosting this event — you're already counted as going.",
+        )
+
+    # A species-restricted event can only be attended by someone bringing that
+    # species. Nothing checked this at all, so a cat-only owner could RSVP to a
+    # dogs-only meetup and only find out on the day.
+    eligible = await _eligible_pets(db, user, event.species)
+    if event.species is not None and not eligible:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"This meetup is for {event.species}s only, and you don't have a {event.species} profile yet.",
+        )
+
     if body.pet_id is not None:
         pet_result = await db.execute(
             select(PetProfile).where(PetProfile.id == body.pet_id, PetProfile.user_id == user.id)
         )
-        if pet_result.scalar_one_or_none() is None:
+        pet = pet_result.scalar_one_or_none()
+        if pet is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not own this pet")
+        if event.species is not None and pet.species.value != event.species:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{pet.name} is a {pet.species.value} — this meetup is for {event.species}s only.",
+            )
 
     existing_result = await db.execute(
         select(EventRSVP).where(EventRSVP.event_id == event_id, EventRSVP.user_id == user.id)
