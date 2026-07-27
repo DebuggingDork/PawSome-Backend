@@ -26,10 +26,17 @@ class ConnectionManager:
         self.pubsub_task: asyncio.Task | None = None
         
     async def initialize(self, redis: Redis):
-        """Initialize Redis pub/sub"""
+        """Initialize Redis pub/sub.
+
+        Idempotent — called once at startup and defensively from the WebSocket
+        route, which would otherwise start a second listener task per socket.
+        """
+        if self.redis_client is not None:
+            return
         self.redis_client = redis
         # Start listening to pub/sub
         self.pubsub_task = asyncio.create_task(self._listen_to_redis())
+        logger.info("chat fan-out initialised")
     
     async def connect(self, websocket: WebSocket, match_id: str, pet_id: str):
         """Register an already-accepted WebSocket.
@@ -115,7 +122,11 @@ class ConnectionManager:
             return
 
         while True:
-            pubsub = self.redis_client.pubsub()
+            # Dedicated subscriber client — see app/core/redis.py for why the
+            # command client's 5s socket timeout can't be used here.
+            from app.core.redis import pubsub_redis_client
+
+            pubsub = pubsub_redis_client.pubsub()
             try:
                 await pubsub.psubscribe("chat:*")
                 async for message in pubsub.listen():

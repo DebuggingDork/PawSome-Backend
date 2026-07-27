@@ -1,9 +1,17 @@
 import asyncio
 import json
+import logging
+import uuid
 from typing import Dict, Set
 
 from fastapi import WebSocket
 from redis.asyncio import Redis
+
+logger = logging.getLogger(__name__)
+
+# Same purpose as chat_manager's: tags what this process published so the
+# listener can skip its own echo. Regenerated per process start.
+INSTANCE_ID = uuid.uuid4().hex
 
 
 class NotificationManager:
@@ -26,8 +34,20 @@ class NotificationManager:
         self.pubsub_task: asyncio.Task | None = None
 
     async def initialize(self, redis: Redis):
+        """Attach Redis and start the fan-out listener.
+
+        Idempotent, because this is now called once at startup *and* defensively
+        from the WebSocket route. It used to be called only from the route, so
+        on a worker where nobody had yet opened a notification socket
+        `redis_client` was None and every broadcast_to_user() silently returned
+        without publishing anything — a like or match notification that was
+        saved to the database but never pushed to anyone.
+        """
+        if self.redis_client is not None:
+            return
         self.redis_client = redis
         self.pubsub_task = asyncio.create_task(self._listen_to_redis())
+        logger.info("notification fan-out initialised")
 
     async def connect(self, websocket: WebSocket, user_id: str):
         """Register an already-accepted WebSocket — the caller owns the accept,
@@ -58,9 +78,34 @@ class NotificationManager:
 
     async def broadcast_to_user(self, user_id: str, payload: dict):
         """Publish via Redis so the push reaches the user regardless of which
-        instance their WebSocket happens to be connected to."""
-        if self.redis_client:
-            await self.redis_client.publish(f"notif:{user_id}", json.dumps(payload))
+        instance their WebSocket happens to be connected to.
+
+        Delivers locally first so a Redis problem can't stop a push to someone
+        connected to this very process — the same ordering chat_manager uses,
+        and for the same reason.
+        """
+        await self.send_to_user(user_id, payload)
+
+        if not self.redis_client:
+            logger.error(
+                "notification fan-out is not initialised — user %s gets no live "
+                "push for %s (the row is saved and will appear on next fetch)",
+                user_id, payload.get("data", {}).get("notification_type", "?"),
+            )
+            return
+
+        try:
+            # _origin lets our own listener recognise this instance's echo and
+            # skip it, since those sockets were already served above.
+            await self.redis_client.publish(
+                f"notif:{user_id}", json.dumps({**payload, "_origin": INSTANCE_ID})
+            )
+        except Exception:
+            logger.warning(
+                "notification: Redis publish failed for user %s — anyone connected "
+                "to another instance won't see it live",
+                user_id, exc_info=True,
+            )
 
     async def _listen_to_redis(self):
         """Same resubscribe-on-failure pattern as ConnectionManager — see
@@ -70,7 +115,11 @@ class NotificationManager:
             return
 
         while True:
-            pubsub = self.redis_client.pubsub()
+            # Dedicated subscriber client — see app/core/redis.py for why the
+            # command client's 5s socket timeout can't be used here.
+            from app.core.redis import pubsub_redis_client
+
+            pubsub = pubsub_redis_client.pubsub()
             try:
                 await pubsub.psubscribe("notif:*")
                 async for message in pubsub.listen():
@@ -78,12 +127,25 @@ class NotificationManager:
                         channel = message["channel"].decode() if isinstance(message["channel"], bytes) else message["channel"]
                         user_id = channel.replace("notif:", "")
                         data = json.loads(message["data"])
+
+                        # Our own publish — broadcast_to_user already served
+                        # this instance's sockets, so re-delivering would show
+                        # the user every notification twice.
+                        if data.pop("_origin", None) == INSTANCE_ID:
+                            continue
+
                         await self.send_to_user(user_id, data)
             except asyncio.CancelledError:
                 await pubsub.punsubscribe("notif:*")
                 await pubsub.close()
                 return
             except Exception:
+                # Logged, not swallowed: a dead subscription means notifications
+                # published by other instances stop arriving entirely, and this
+                # loop retried forever without leaving any trace of why.
+                logger.warning(
+                    "notification pub/sub dropped, resubscribing in 1s", exc_info=True
+                )
                 await pubsub.close()
                 await asyncio.sleep(1)
 
