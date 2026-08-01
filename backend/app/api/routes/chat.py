@@ -145,8 +145,13 @@ async def websocket_chat(
             # Get or create participant for this user
             participant = await get_or_create_participant(match_uuid, pet_id, db)
             
+            # Identifies this socket for as long as it lives. Presence is a set
+            # of these per pet, so two tabs on the same conversation are two
+            # members and closing one does not take the other offline.
+            connection_id = uuid.uuid4().hex
+
             # Connect the WebSocket
-            await manager.connect(websocket, match_id, str(pet_id))
+            await manager.connect(websocket, match_id, str(pet_id), connection_id)
 
             # Held for the life of the connection so repeat lookups of things
             # that cannot change mid-conversation don't cost a round trip per
@@ -328,11 +333,20 @@ async def websocket_chat(
                             }
                         }
                         await manager.broadcast_message(match_id, typing_data)
-                    
+
+                    elif msg_type == "ping":
+                        # The client already heartbeats every 20s to keep proxies
+                        # from idling the connection out. Presence rides on that
+                        # rather than adding a timer of its own: this is the one
+                        # signal that already means "this socket is still real".
+                        await manager.mark_online(str(pet_id), connection_id)
+
             except WebSocketDisconnect:
-                manager.disconnect(match_id, str(pet_id))
-            except Exception as e:
-                manager.disconnect(match_id, str(pet_id))
+                manager.disconnect(match_id, str(pet_id), websocket)
+                await manager.mark_offline(str(pet_id), connection_id)
+            except Exception:
+                manager.disconnect(match_id, str(pet_id), websocket)
+                await manager.mark_offline(str(pet_id), connection_id)
                 raise
         finally:
             await db.close()
