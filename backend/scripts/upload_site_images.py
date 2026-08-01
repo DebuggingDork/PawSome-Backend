@@ -127,11 +127,16 @@ IMAGES = {
     # and an overwrite behind the same URL can keep serving the previous image
     # for as long as it feels like. A new key is the only way to be certain the
     # swap is actually visible.
+    # -v2 because the same-key rewrite that took this from 1.18 to 1.38 was not
+    # visible to the browser that had already loaded it: no Cache-Control means
+    # no TTL to outlast, but it also means the browser falls back to heuristic
+    # caching and simply does not re-ask. A changed key is the only version of
+    # this that a client cannot miss.
     "porchCats": SiteImage(
         r"D:\prasad-bhalerao-NKPXEz7MNlk-unsplash.jpg",
-        "site/porchCats.jpg",
+        "site/porchCats-v2.jpg",
         1600,
-        1.38,
+        1.70,
     ),
 }
 
