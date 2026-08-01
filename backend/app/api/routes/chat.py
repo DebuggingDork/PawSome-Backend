@@ -253,7 +253,7 @@ async def websocket_chat(
                         # someone who's already seeing the message live in-chat).
                         other_pet_id = match.pet2_id if match.pet1_id == pet_id else match.pet1_id
                         message_notif: Notification | None = None
-                        if str(other_pet_id) not in manager.get_local_connections(match_id):
+                        if not await manager.is_pet_in_match(match_id, str(other_pet_id)):
                             # Cached for the connection: the other participant in
                             # a match can't change mid-conversation, so looking
                             # them up per message was a round trip for a constant.
@@ -339,14 +339,14 @@ async def websocket_chat(
                         # from idling the connection out. Presence rides on that
                         # rather than adding a timer of its own: this is the one
                         # signal that already means "this socket is still real".
-                        await manager.mark_online(str(pet_id), connection_id)
+                        await manager.mark_online(str(pet_id), connection_id, match_id)
 
             except WebSocketDisconnect:
                 manager.disconnect(match_id, str(pet_id), websocket)
-                await manager.mark_offline(str(pet_id), connection_id)
+                await manager.mark_offline(str(pet_id), connection_id, match_id)
             except Exception:
                 manager.disconnect(match_id, str(pet_id), websocket)
-                await manager.mark_offline(str(pet_id), connection_id)
+                await manager.mark_offline(str(pet_id), connection_id, match_id)
                 raise
         finally:
             await db.close()

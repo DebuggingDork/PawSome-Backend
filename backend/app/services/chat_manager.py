@@ -46,7 +46,20 @@ PRESENCE_KEY_TTL = 300
 
 
 def _presence_key(pet_id: str) -> str:
+    """Is this pet connected anywhere at all — the chat header's dot."""
     return f"presence:{pet_id}"
+
+
+def _match_presence_key(match_id: str, pet_id: str) -> str:
+    """Is this pet connected to *this* conversation.
+
+    A different question from `_presence_key`, and the one that decides whether
+    a NEW_MESSAGE notification is redundant. Being online somewhere only means
+    the app is open; it says nothing about which thread is on screen, so
+    suppressing on general presence would silently drop notifications for every
+    other conversation a user has.
+    """
+    return f"presence:match:{match_id}:{pet_id}"
 
 
 class ConnectionManager:
@@ -91,7 +104,11 @@ class ConnectionManager:
         self.active_connections[match_id][pet_id] = websocket
 
         if connection_id:
-            await self.mark_online(pet_id, connection_id)
+            # match_id included so match presence exists from the very first
+            # moment, not only after the first heartbeat ping ~20s later —
+            # otherwise a reply arriving in that window still raises a
+            # redundant notification for a thread that is already on screen.
+            await self.mark_online(pet_id, connection_id, match_id)
 
     def disconnect(self, match_id: str, pet_id: str, websocket: WebSocket | None = None):
         """Remove a WebSocket connection from this instance's routing table.
@@ -117,29 +134,60 @@ class ConnectionManager:
         if not self.active_connections[match_id]:
             del self.active_connections[match_id]
 
-    async def mark_online(self, pet_id: str, connection_id: str) -> None:
+    async def _touch(self, keys: list[str], connection_id: str) -> None:
+        """Add or refresh this connection in each set, in one round trip."""
+        now = int(time.time())
+        pipe = self.redis_client.pipeline()
+        for key in keys:
+            pipe.zadd(key, {connection_id: now})
+            pipe.expire(key, PRESENCE_KEY_TTL)
+        await pipe.execute()
+
+    async def _drop(self, keys: list[str], connection_id: str) -> None:
+        """Remove this connection from each set, deleting sets left empty."""
+        pipe = self.redis_client.pipeline()
+        for key in keys:
+            pipe.zrem(key, connection_id)
+            pipe.zcard(key)
+        results = await pipe.execute()
+        empty = [key for key, remaining in zip(keys, results[1::2]) if not remaining]
+        if empty:
+            await self.redis_client.delete(*empty)
+
+    async def _alive(self, key: str) -> bool:
+        """Prune anything past the staleness window, then ask if any is left."""
+        cutoff = int(time.time()) - PRESENCE_STALE_AFTER
+        pipe = self.redis_client.pipeline()
+        pipe.zremrangebyscore(key, "-inf", cutoff)
+        pipe.zcard(key)
+        _, live = await pipe.execute()
+        return bool(live)
+
+    async def mark_online(self, pet_id: str, connection_id: str, match_id: str | None = None) -> None:
         """Record this connection as live, or refresh how recently it was seen.
 
         Called once on connect and again on every client heartbeat, which is why
         it is a single idempotent ZADD rather than separate add/refresh paths —
         re-adding an existing member just updates its score.
+
+        Writes both sets: the pet is online, *and* the pet is in this specific
+        conversation. Both are refreshed by the same heartbeat, so they can
+        never disagree about how fresh they are.
         """
         if not self.redis_client:
             return
-        key = _presence_key(pet_id)
+        keys = [_presence_key(pet_id)]
+        if match_id:
+            keys.append(_match_presence_key(match_id, pet_id))
         try:
-            now = int(time.time())
-            pipe = self.redis_client.pipeline()
-            pipe.zadd(key, {connection_id: now})
-            pipe.expire(key, PRESENCE_KEY_TTL)
-            await pipe.execute()
+            await self._touch(keys, connection_id)
         except Exception:
             # Presence is a label on a chat header. It must never be the reason
             # a message fails to send or a socket fails to open.
             logger.warning("presence: could not mark %s online", pet_id, exc_info=True)
 
-    async def mark_offline(self, pet_id: str, connection_id: str) -> None:
-        """Drop one connection from a pet's presence set.
+    async def mark_offline(self, pet_id: str, connection_id: str, match_id: str | None = None) -> None:
+        """Drop one connection from a pet's presence sets.
 
         Only this connection. Any other socket the same pet still has open
         keeps them online, which is the whole reason presence is a set of
@@ -147,18 +195,39 @@ class ConnectionManager:
         """
         if not self.redis_client:
             return
-        key = _presence_key(pet_id)
+        keys = [_presence_key(pet_id)]
+        if match_id:
+            keys.append(_match_presence_key(match_id, pet_id))
         try:
-            pipe = self.redis_client.pipeline()
-            pipe.zrem(key, connection_id)
-            pipe.zcard(key)
-            _, remaining = await pipe.execute()
-            if not remaining:
-                await self.redis_client.delete(key)
+            await self._drop(keys, connection_id)
         except Exception:
             # Worst case this connection ages out of the window on its own,
             # which is the same path an abrupt disconnect already takes.
             logger.warning("presence: could not mark %s offline", pet_id, exc_info=True)
+
+    async def is_pet_in_match(self, match_id: str, pet_id: str) -> bool:
+        """Does this pet have a live socket open on *this* conversation?
+
+        The question NEW_MESSAGE suppression actually needs, and the reason it
+        cannot use `get_local_connections`: that only sees sockets on the
+        process handling the send. With more than one instance, a recipient
+        connected elsewhere looked absent, so they received the live message
+        via Redis fan-out *and* a "sent you a message" toast for the thread
+        already open in front of them.
+
+        Redis is shared, so this is true wherever the recipient is connected —
+        and false the moment they switch to another conversation, which is
+        exactly when the notification becomes worth sending.
+        """
+        if not self.redis_client:
+            return False
+        try:
+            return await self._alive(_match_presence_key(match_id, pet_id))
+        except Exception:
+            # Fall back to notifying. A redundant toast is a smaller failure
+            # than a message the recipient is never told about.
+            logger.warning("presence: could not read match %s / pet %s", match_id, pet_id, exc_info=True)
+            return False
     
     async def send_to_match(self, match_id: str, message: dict, exclude_pet: str | None = None):
         """Send message to all connected users in a match (local instance only)"""
@@ -259,14 +328,8 @@ class ConnectionManager:
         """
         if not self.redis_client:
             return False
-        key = _presence_key(pet_id)
         try:
-            cutoff = int(time.time()) - PRESENCE_STALE_AFTER
-            pipe = self.redis_client.pipeline()
-            pipe.zremrangebyscore(key, "-inf", cutoff)
-            pipe.zcard(key)
-            _, live = await pipe.execute()
-            return bool(live)
+            return await self._alive(_presence_key(pet_id))
         except Exception:
             logger.warning("presence: could not read %s", pet_id, exc_info=True)
             return False
