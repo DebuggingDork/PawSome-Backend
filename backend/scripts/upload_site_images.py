@@ -131,7 +131,7 @@ IMAGES = {
         r"D:\prasad-bhalerao-NKPXEz7MNlk-unsplash.jpg",
         "site/porchCats.jpg",
         1600,
-        1.18,
+        1.38,
     ),
 }
 
