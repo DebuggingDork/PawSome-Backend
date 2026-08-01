@@ -82,12 +82,12 @@ class SiteImage(NamedTuple):
 #             photo. The previous hero was centre-weighted, which is why it
 #             needed a near-opaque black wash over the left and ended up looking
 #             like a dark rectangle with text on it.
-#   duskRun   the landing's closing band. Was the Auth background too until
-#             nappingCats took that slot; still renamed from heroDog.
-#   nappingCats  the Auth background. Two tabbies asleep against a sunlit wall,
-#             supplied by the project owner. Sits under the same two scrims as
-#             duskRun did, and those scrims are unchanged, so the brightness has
-#             to come out of the file itself — see the gamma column below.
+#   duskRun   the landing's closing band. Was the Auth background too until the
+#             cats took that slot; still renamed from heroDog.
+#   porchCats the Auth background. Two cats resting on a garden ledge behind
+#             bougainvillea. Sits under the same two scrims duskRun did, and
+#             those scrims are unchanged, so the brightness has to come out of
+#             the file itself — see the gamma field on SiteImage.
 #
 # The Unsplash entries are CDN slugs, not the short /photos/<id> links you get
 # from the website. unsplash.com/photos/<id>/download answers 403 to any client
@@ -119,7 +119,20 @@ IMAGES = {
         "site/duskRun.jpg",
         1600,
     ),
-    "nappingCats": SiteImage(r"D:\img38.jpg", "site/nappingCats.jpg", 1600, 1.18),
+    # Auth background. Replaced nappingCats (site/nappingCats.jpg, two tabbies
+    # asleep on a wall) the same day it went up; that object is still in the
+    # bucket and nothing references it now.
+    #
+    # A new key rather than a rewrite of the old one on purpose: r2.dev caches,
+    # and an overwrite behind the same URL can keep serving the previous image
+    # for as long as it feels like. A new key is the only way to be certain the
+    # swap is actually visible.
+    "porchCats": SiteImage(
+        r"D:\prasad-bhalerao-NKPXEz7MNlk-unsplash.jpg",
+        "site/porchCats.jpg",
+        1600,
+        1.18,
+    ),
 }
 
 
