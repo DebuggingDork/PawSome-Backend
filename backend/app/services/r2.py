@@ -68,6 +68,28 @@ def create_presigned_upload(object_key: str, content_type: str) -> str:
     )
 
 
+def put_object(object_key: str, data: bytes, content_type: str) -> None:
+    """Upload bytes to R2 from the server. Blocking — call via run_in_threadpool.
+
+    The presigned-PUT flow above is the fast path and stays the default: it
+    keeps image bytes off this server entirely. But it only works if the
+    browser's origin is in the bucket's CORS allowlist, and R2 matches origins
+    exactly — no wildcards, no subdomains (see set_r2_cors.py). Any origin not
+    on that list (a phone hitting a dev server over the LAN, a Vercel preview
+    deploy) has its PUT blocked by the browser before R2 ever sees it.
+
+    That used to be a dead end on a step the user cannot skip. This is the
+    fallback: same destination, same object key, bytes routed through the API
+    instead of around it.
+    """
+    _client().put_object(
+        Bucket=settings.r2_bucket_name,
+        Key=object_key,
+        Body=data,
+        ContentType=content_type,
+    )
+
+
 def get_object_size(object_key: str) -> int | None:
     """Object size in bytes, or None if the object doesn't exist.
     Blocking — call via run_in_threadpool."""

@@ -1,11 +1,12 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_owned_pet, get_owned_pet_any
+from app.api.photo_uploads import read_upload_within_limit, validated_upload_content_type
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.pet_photo import PetPhoto
@@ -133,21 +134,37 @@ async def confirm_photo_upload(
             detail=f"Image exceeds {r2.MAX_PHOTO_BYTES // (1024 * 1024)} MB limit",
         )
 
+    return await _save_pet_photo(db, pet, body.object_key, count)
+
+
+async def _save_pet_photo(
+    db: AsyncSession,
+    pet: PetProfile,
+    object_key: str,
+    count: int,
+) -> PetPhoto:
+    """Record an object that is already in R2 as one of this pet's photos.
+
+    Shared by the presigned flow and the proxied one below. Everything from
+    here on has to be identical between them — which photo becomes primary,
+    when the pet goes active, which achievement fires — because from the
+    product's point of view they are the same action.
+    """
     is_first_photo = (count == 0)
-    
+
     photo = PetPhoto(
         pet_id=pet.id,
-        object_key=body.object_key,
-        url=r2.public_url(body.object_key),
+        object_key=object_key,
+        url=r2.public_url(object_key),
         is_primary=is_first_photo,
         sort_order=count,
     )
     db.add(photo)
-    
+
     # Activate pet when first photo is uploaded
     if is_first_photo and not pet.is_active:
         pet.is_active = True
-    
+
     await db.commit()
     await db.refresh(photo)
 
@@ -158,6 +175,37 @@ async def confirm_photo_upload(
         await achievements.grant_achievement(db, pet.user_id, AchievementType.PET_PHOTO)
 
     return photo
+
+
+@router.post("/upload", response_model=PetPhotoResponse, status_code=status.HTTP_201_CREATED)
+async def upload_photo(
+    file: UploadFile = File(...),
+    pet: PetProfile = Depends(get_owned_pet_any),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a pet photo through this API instead of straight to R2.
+
+    The fallback for when the browser cannot reach R2 directly — its origin is
+    not in the bucket's exactly-matched CORS allowlist, so the PUT never
+    leaves the device. See the profile-photo equivalent in routes/users.py and
+    put_object in services/r2.py for the full reasoning.
+    """
+    _require_r2_configured()
+
+    count = await _photo_count(db, pet.id)
+    if count >= MAX_PHOTOS_PER_PET:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Maximum of {MAX_PHOTOS_PER_PET} photos per pet",
+        )
+
+    content_type = validated_upload_content_type(file)
+    data = await read_upload_within_limit(file)
+
+    object_key = r2.build_object_key(pet.id, content_type)
+    await run_in_threadpool(r2.put_object, object_key, data, content_type)
+
+    return await _save_pet_photo(db, pet, object_key, count)
 
 
 @router.post("/{photo_id}/replace/presign", response_model=PhotoPresignResponse)
@@ -225,15 +273,47 @@ async def confirm_photo_replace(
             detail=f"Image exceeds {r2.MAX_PHOTO_BYTES // (1024 * 1024)} MB limit",
         )
 
+    return await _swap_photo_object(db, photo, body.object_key)
+
+
+async def _swap_photo_object(db: AsyncSession, photo: PetPhoto, object_key: str) -> PetPhoto:
+    """Repoint an existing photo row at a new object, then bin the old file.
+
+    The delete happens after the commit deliberately: if it went first, a
+    failed commit would leave the row pointing at a file that no longer exists.
+    """
     old_object_key = photo.object_key
-    photo.object_key = body.object_key
-    photo.url = r2.public_url(body.object_key)
+    photo.object_key = object_key
+    photo.url = r2.public_url(object_key)
 
     await db.commit()
     await db.refresh(photo)
-    await run_in_threadpool(r2.delete_object, old_object_key)
+    if old_object_key != object_key:
+        await run_in_threadpool(r2.delete_object, old_object_key)
 
     return photo
+
+
+@router.post("/{photo_id}/replace/upload", response_model=PetPhotoResponse)
+async def upload_photo_replace(
+    photo_id: uuid.UUID,
+    file: UploadFile = File(...),
+    pet: PetProfile = Depends(get_owned_pet_any),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace a photo's image, with the bytes routed through this API.
+
+    Same fallback as /upload — see that route for why it exists."""
+    _require_r2_configured()
+    photo = await _get_owned_photo(photo_id, pet, db)
+
+    content_type = validated_upload_content_type(file)
+    data = await read_upload_within_limit(file)
+
+    object_key = r2.build_object_key(pet.id, content_type)
+    await run_in_threadpool(r2.put_object, object_key, data, content_type)
+
+    return await _swap_photo_object(db, photo, object_key)
 
 
 @router.patch("/{photo_id}/primary", response_model=PetPhotoResponse)

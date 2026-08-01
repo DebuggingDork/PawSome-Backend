@@ -1,13 +1,14 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_current_user_optional
+from app.api.photo_uploads import read_upload_within_limit, validated_upload_content_type
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.match import Match
@@ -340,6 +341,41 @@ async def presign_profile_photo_upload(
     )
 
 
+async def _save_profile_photo(db: AsyncSession, user: User, object_key: str) -> UserFullProfile:
+    """Point the user's profile at an object already sitting in R2.
+
+    Shared by both upload routes below — the presigned flow, where the browser
+    put the bytes there, and the proxied flow, where this server did. Once the
+    object exists the remaining work is identical, and it must stay identical:
+    the two paths differ only in how the bytes arrived.
+    """
+    # Track if this is first photo
+    is_first_photo = not user.profile_photo_url
+
+    # Delete old photo if exists
+    if user.profile_photo_url:
+        old_key = user.profile_photo_url.replace(settings.r2_public_base_url.rstrip('/') + '/', '')
+        # Only when it is genuinely a different object. The key for a profile
+        # photo is derived from the user id and extension, so re-uploading a
+        # JPEG over a JPEG reuses the same key — deleting "the old one" here
+        # would delete the file that was just uploaded.
+        if old_key.startswith(f"users/{user.id}/") and old_key != object_key:
+            await run_in_threadpool(r2.delete_object, old_key)
+
+    # Update user profile
+    user.profile_photo_url = r2.public_url(object_key)
+    await db.commit()
+    await db.refresh(user)
+
+    # Grant achievement for first photo upload
+    if is_first_photo:
+        from app.models.user_achievement import AchievementType
+        from app.services import achievements
+        await achievements.grant_achievement(db, user.id, AchievementType.PROFILE_PHOTO)
+
+    return UserFullProfile.model_validate(user)
+
+
 @router.post("/me/photo", response_model=UserFullProfile)
 async def confirm_profile_photo_upload(
     body: UserPhotoConfirmRequest,
@@ -370,27 +406,33 @@ async def confirm_profile_photo_upload(
             detail=f"Image exceeds {r2.MAX_PHOTO_BYTES // (1024 * 1024)} MB limit",
         )
 
-    # Track if this is first photo
-    is_first_photo = not user.profile_photo_url
+    return await _save_profile_photo(db, user, body.object_key)
 
-    # Delete old photo if exists
-    if user.profile_photo_url:
-        old_key = user.profile_photo_url.replace(settings.r2_public_base_url.rstrip('/') + '/', '')
-        if old_key.startswith(f"users/{user.id}/"):
-            await run_in_threadpool(r2.delete_object, old_key)
 
-    # Update user profile
-    user.profile_photo_url = r2.public_url(body.object_key)
-    await db.commit()
-    await db.refresh(user)
+@router.post("/me/photo/upload", response_model=UserFullProfile)
+async def upload_profile_photo(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a profile photo through this API instead of straight to R2.
 
-    # Grant achievement for first photo upload
-    if is_first_photo:
-        from app.models.user_achievement import AchievementType
-        from app.services import achievements
-        await achievements.grant_achievement(db, user.id, AchievementType.PROFILE_PHOTO)
+    The presigned route is the fast path and stays the default. This exists
+    because that path depends on the browser's origin being in the bucket's
+    CORS allowlist, which R2 matches exactly — so a phone on a LAN address, or
+    a preview deploy, has its PUT blocked client-side and gets no status code
+    back to explain why. Adding a photo is a required onboarding step with no
+    skip, so a failure there stops the account cold. This is the way through.
+    """
+    _require_r2_configured()
 
-    return UserFullProfile.model_validate(user)
+    content_type = validated_upload_content_type(file)
+    data = await read_upload_within_limit(file)
+
+    object_key = r2.build_user_photo_key(user.id, content_type)
+    await run_in_threadpool(r2.put_object, object_key, data, content_type)
+
+    return await _save_profile_photo(db, user, object_key)
 
 
 @router.delete("/me/photo", status_code=status.HTTP_204_NO_CONTENT)
