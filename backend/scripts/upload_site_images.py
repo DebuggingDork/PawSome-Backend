@@ -68,6 +68,11 @@ class SiteImage(NamedTuple):
     max_edge: int | None = None
     gamma: float = 1.0
     crop: tuple[int, int] | None = None
+    #: JPEG quality. Defaults to QUALITY, which is tuned for backgrounds sitting
+    #: under a scrim. Anything that gets re-encoded again downstream wants more
+    #: headroom than that — a share card is compressed a second time by whoever
+    #: renders it, on top of whatever we did here.
+    quality: int = QUALITY
 
 
 # name -> SiteImage
@@ -155,10 +160,19 @@ IMAGES = {
     # Cropped, not fitted. A share card is displayed at a fixed 1.91:1 by every
     # one of those services, so the choice is to crop it here or let each of
     # them crop it differently.
+    #
+    # 1535x803, not the 1200x630 this started as. 1200 is the *minimum* those
+    # services accept, not a target, and the card is then drawn on displays with
+    # 2x device pixels and re-encoded by whoever is rendering it — at 1200 there
+    # was nothing left for either to spend, and it read soft. The source is
+    # 1535x1025, so 1535 wide at 1.91:1 is every pixel it has and still not one
+    # of upscaling. Quality 92 rather than the default 82 for the same reason:
+    # this file gets compressed a second time by someone else.
     "ogCard": SiteImage(
         "https://pub-2241f255146e4b8ab3347e935732ec62.r2.dev/site/final-home-page-image.png",
-        "site/og-card.jpg",
-        crop=(1200, 630),
+        "site/og-card-v2.jpg",
+        crop=(1535, 803),
+        quality=92,
     ),
 }
 
@@ -189,7 +203,7 @@ def main(argv: list[str]) -> int:
 
     with httpx.Client(headers={"User-Agent": "PawSome-Seeder/1.0"}) as client:
         for name, spec in selected.items():
-            source, key, max_edge, gamma, crop = spec
+            source, key, max_edge, gamma, crop, quality = spec
             content_type = CONTENT_TYPES.get(Path(key).suffix.lower())
             if content_type is None:
                 print(f"  {name:22} SKIPPED — unsupported extension in key: {key}")
@@ -228,7 +242,7 @@ def main(argv: list[str]) -> int:
                         img.thumbnail((max_edge, max_edge), Image.LANCZOS)
                     img = _apply_gamma(img, gamma)
                     buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=QUALITY, optimize=True)
+                    img.save(buf, format="JPEG", quality=quality, optimize=True)
                     payload = buf.getvalue()
 
             _client().put_object(
