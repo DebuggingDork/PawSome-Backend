@@ -25,7 +25,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PIL import Image  # noqa: E402
+from PIL import Image, ImageOps  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
 from app.services.r2 import _client, public_url  # noqa: E402
@@ -54,12 +54,20 @@ class SiteImage(NamedTuple):
     `max_edge` of None stores the source bytes exactly as they arrived, with no
     downscale, re-encode or grade. `gamma` above 1.0 lifts midtones on the way
     through; it only applies when the image is being re-encoded anyway.
+
+    `crop` is an exact (width, height) the image is filled to, centre-cropping
+    whatever the aspect mismatch costs. `max_edge` fits *inside* a box and keeps
+    the source aspect, which is what a background wants; a social card is the
+    other case — 1200x630 is not a suggestion to Facebook, LinkedIn or Slack,
+    and an image of any other shape gets letterboxed or cropped by them instead,
+    with no say in where. Set one or the other, not both.
     """
 
     source: str
     key: str
     max_edge: int | None = None
     gamma: float = 1.0
+    crop: tuple[int, int] | None = None
 
 
 # name -> SiteImage
@@ -138,6 +146,20 @@ IMAGES = {
         1600,
         1.70,
     ),
+    # The card LinkedIn, Slack, WhatsApp and X render when someone pastes a link
+    # to the site. Sourced from the hero already in the bucket rather than from
+    # disk: the original PNG was cleared out of Downloads, so this is the only
+    # copy left, and pointing at the public URL keeps the entry reproducible
+    # instead of quietly un-runnable like heroPets above.
+    #
+    # Cropped, not fitted. A share card is displayed at a fixed 1.91:1 by every
+    # one of those services, so the choice is to crop it here or let each of
+    # them crop it differently.
+    "ogCard": SiteImage(
+        "https://pub-2241f255146e4b8ab3347e935732ec62.r2.dev/site/final-home-page-image.png",
+        "site/og-card.jpg",
+        crop=(1200, 630),
+    ),
 }
 
 
@@ -167,7 +189,7 @@ def main(argv: list[str]) -> int:
 
     with httpx.Client(headers={"User-Agent": "PawSome-Seeder/1.0"}) as client:
         for name, spec in selected.items():
-            source, key, max_edge, gamma = spec
+            source, key, max_edge, gamma, crop = spec
             content_type = CONTENT_TYPES.get(Path(key).suffix.lower())
             if content_type is None:
                 print(f"  {name:22} SKIPPED — unsupported extension in key: {key}")
@@ -184,7 +206,7 @@ def main(argv: list[str]) -> int:
                     continue
                 raw = path.read_bytes()
 
-            if max_edge is None:
+            if max_edge is None and crop is None:
                 # Byte for byte. Anything stored this way is displayed at a size
                 # where the re-encode below was visible, so the only safe
                 # transform is none at all.
@@ -200,7 +222,10 @@ def main(argv: list[str]) -> int:
                         flat.paste(img, mask=img.split()[-1])
                         img = flat
                     img = img.convert("RGB")
-                    img.thumbnail((max_edge, max_edge), Image.LANCZOS)
+                    if crop is not None:
+                        img = ImageOps.fit(img, crop, Image.LANCZOS, centering=(0.5, 0.5))
+                    else:
+                        img.thumbnail((max_edge, max_edge), Image.LANCZOS)
                     img = _apply_gamma(img, gamma)
                     buf = io.BytesIO()
                     img.save(buf, format="JPEG", quality=QUALITY, optimize=True)
@@ -214,7 +239,12 @@ def main(argv: list[str]) -> int:
             )
             results[name] = public_url(key)
             total += len(payload)
-            note = "" if max_edge else "  (stored as-is)"
+            if crop is not None:
+                note = f"  (cropped to {crop[0]}x{crop[1]})"
+            elif max_edge is None:
+                note = "  (stored as-is)"
+            else:
+                note = ""
             print(
                 f"  {name:22} {len(raw) // 1024:>5} KB -> {len(payload) // 1024:>4} KB"
                 f"  {key}{note}"
