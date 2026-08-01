@@ -19,6 +19,7 @@ bucket ever changes.
 import io
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 
@@ -32,12 +33,36 @@ from app.services.r2 import _client, public_url  # noqa: E402
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-CONTENT_TYPE = "image/jpeg"
 QUALITY = 82
+
+CONTENT_TYPES = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
 UNSPLASH = "https://images.unsplash.com/{}?auto=format&fit=crop&q=80&w=2000"
 
-# name -> (source url, longest edge to store at)
+
+class SiteImage(NamedTuple):
+    """One object in the bucket.
+
+    `key` is spelled out rather than derived from the dict key because it is not
+    always `site/<name>.jpg`: the hero is a PNG under a different name, and
+    guessing the key is how this script came to write `site/heroPets.jpg` — an
+    object nothing has ever referenced — while the hero the site actually loads
+    sat untouched beside it. Deriving the key made a full run look like it had
+    republished everything when it had in fact quietly missed the largest image
+    on the site.
+
+    `max_edge` of None stores the source bytes exactly as they arrived, with no
+    downscale, re-encode or grade. `gamma` above 1.0 lifts midtones on the way
+    through; it only applies when the image is being re-encoded anyway.
+    """
+
+    source: str
+    key: str
+    max_edge: int | None = None
+    gamma: float = 1.0
+
+
+# name -> SiteImage
 #
 # This list got much shorter. Seven of the nine entries existed to dress the
 # landing page's card sections with stock photography: three article headers for
@@ -73,24 +98,28 @@ UNSPLASH = "https://images.unsplash.com/{}?auto=format&fit=crop&q=80&w=2000"
 # through the same downscale and re-encode as the stock ones instead of being
 # dropped into the bucket at whatever size it arrived.
 #
-# name -> (source, longest edge, gamma)
-#
-# gamma is a midtone lift applied before the re-encode: 1.0 leaves the file
-# alone, above 1.0 brightens. It is a gamma curve rather than a flat brightness
-# multiply because a multiply pushes anything already near white straight past
-# 255 — and the one photo that needs lifting here is a pale stucco wall that is
-# most of the frame. A gamma curve pins 0 and 255 in place and opens up the
-# middle, so the cats come forward without the wall clipping to a flat sheet.
 IMAGES = {
     # Supplied by the project owner, replacing the Unsplash frame that was here
-    # (photo-1711832740932-f7f3fe63cdd5).
-    "heroPets": (
+    # (photo-1711832740932-f7f3fe63cdd5). Stored byte for byte as the PNG it
+    # arrived as, which is why it carries no max_edge: the hero is the whole
+    # first viewport and re-encoding it to an 82-quality JPEG was visible.
+    #
+    # The source path no longer exists — the file was cleared out of Downloads
+    # after it was uploaded, so the object in the bucket is now the only copy.
+    # A run that includes this entry prints SKIPPED and moves on, which is the
+    # intended behaviour: there is nothing to re-derive it from, and the live
+    # object is correct. Point this at a real file again before expecting it to
+    # republish.
+    "heroPets": SiteImage(
         r"C:\Users\Mani Mamidala\Downloads\Untitled - July 27, 2026 at 20.07.50 (2).png",
-        1800,
-        1.0,
+        "site/final-home-page-image.png",
     ),
-    "duskRun": (UNSPLASH.format("photo-1548199973-03cce0bbc87b"), 1600, 1.0),
-    "nappingCats": (r"D:\img38.jpg", 1600, 1.18),
+    "duskRun": SiteImage(
+        UNSPLASH.format("photo-1548199973-03cce0bbc87b"),
+        "site/duskRun.jpg",
+        1600,
+    ),
+    "nappingCats": SiteImage(r"D:\img38.jpg", "site/nappingCats.jpg", 1600, 1.18),
 }
 
 
@@ -119,7 +148,13 @@ def main(argv: list[str]) -> int:
     total = 0
 
     with httpx.Client(headers={"User-Agent": "PawSome-Seeder/1.0"}) as client:
-        for name, (source, max_edge, gamma) in selected.items():
+        for name, spec in selected.items():
+            source, key, max_edge, gamma = spec
+            content_type = CONTENT_TYPES.get(Path(key).suffix.lower())
+            if content_type is None:
+                print(f"  {name:22} SKIPPED — unsupported extension in key: {key}")
+                continue
+
             if source.lower().startswith("http"):
                 resp = client.get(source, timeout=90, follow_redirects=True)
                 resp.raise_for_status()
@@ -131,31 +166,41 @@ def main(argv: list[str]) -> int:
                     continue
                 raw = path.read_bytes()
 
-            with Image.open(io.BytesIO(raw)) as img:
-                # JPEG has no alpha, and converting RGBA straight to RGB
-                # composites transparency onto black — flatten onto white first.
-                if img.mode in ("RGBA", "LA", "P"):
-                    img = img.convert("RGBA")
-                    flat = Image.new("RGB", img.size, (255, 255, 255))
-                    flat.paste(img, mask=img.split()[-1])
-                    img = flat
-                img = img.convert("RGB")
-                img.thumbnail((max_edge, max_edge), Image.LANCZOS)
-                img = _apply_gamma(img, gamma)
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=QUALITY, optimize=True)
-                payload = buf.getvalue()
+            if max_edge is None:
+                # Byte for byte. Anything stored this way is displayed at a size
+                # where the re-encode below was visible, so the only safe
+                # transform is none at all.
+                payload = raw
+            else:
+                with Image.open(io.BytesIO(raw)) as img:
+                    # JPEG has no alpha, and converting RGBA straight to RGB
+                    # composites transparency onto black — flatten onto white
+                    # first.
+                    if img.mode in ("RGBA", "LA", "P"):
+                        img = img.convert("RGBA")
+                        flat = Image.new("RGB", img.size, (255, 255, 255))
+                        flat.paste(img, mask=img.split()[-1])
+                        img = flat
+                    img = img.convert("RGB")
+                    img.thumbnail((max_edge, max_edge), Image.LANCZOS)
+                    img = _apply_gamma(img, gamma)
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=QUALITY, optimize=True)
+                    payload = buf.getvalue()
 
-            key = f"site/{name}.jpg"
             _client().put_object(
                 Bucket=settings.r2_bucket_name,
                 Key=key,
                 Body=payload,
-                ContentType=CONTENT_TYPE,
+                ContentType=content_type,
             )
             results[name] = public_url(key)
             total += len(payload)
-            print(f"  {name:22} {len(raw) // 1024:>5} KB -> {len(payload) // 1024:>4} KB")
+            note = "" if max_edge else "  (stored as-is)"
+            print(
+                f"  {name:22} {len(raw) // 1024:>5} KB -> {len(payload) // 1024:>4} KB"
+                f"  {key}{note}"
+            )
 
     print(f"\n  stored {total / 1_048_576:.1f} MB total\n")
     print("-" * 72)
