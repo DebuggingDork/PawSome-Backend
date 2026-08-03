@@ -52,16 +52,11 @@ CONTENT_TYPE = "image/jpeg"
 SCREENSHOT_DIR = Path(r"C:\Users\Mani Mamidala\OneDrive\Pictures\Screenshots 1")
 
 # full_name (as stored in seed_data.py's PEOPLE list) -> source image on disk.
-REPLACEMENTS = {
-    "Siddharth Jain": SCREENSHOT_DIR / "Screenshot 2026-08-04 012839.png",
-    "Harika Vemuri": SCREENSHOT_DIR / "Screenshot 2026-08-04 013014.png",
-    "Nandini Sharma": SCREENSHOT_DIR / "Screenshot 2026-08-04 013200.png",
-    "Tarun Bhatt": SCREENSHOT_DIR / "Screenshot 2026-08-04 013305.png",
-}
+REPLACEMENTS: dict[str, Path] = {}
 
 # full_name -> profile_photo_url reverted to NULL, so the UI falls back to its
 # default letter-avatar instead of any photo.
-REMOVALS = ["Lakshmi Prasad", "Pooja Agarwal"]
+REMOVALS = ["Zoya Begum", "Aditya Bose", "Kavya Srinivasan"]
 
 
 def process_image(raw: bytes) -> bytes:
