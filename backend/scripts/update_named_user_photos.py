@@ -5,9 +5,14 @@ local image as their new profile_photo_url instead of the i.pravatar.cc image
 seed_realistic_data.py originally assigned them. Everything else about the
 account (email, bio, pets, matches...) is untouched.
 
-The object key is the same deterministic one seed_realistic_data.py uses
-(build_user_photo_key -> users/{user_id}/profile.jpg), so uploading here
-overwrites the previous object in place. No separate delete step is needed.
+Deliberately does NOT reuse the deterministic users/{id}/profile.jpg key
+seed_realistic_data.py writes to. r2.dev caches aggressively and an overwrite
+behind the same URL can keep serving the previous bytes indefinitely (see the
+same note on porchCats in upload_site_images.py) — a first run of this script
+did exactly that: the DB and the origin object were both correct, but cards
+kept showing the old face because the CDN never re-fetched. Each run instead
+mints a fresh key (users/{id}/profile-{8 hex}.jpg), so the URL itself changes
+and there is nothing to be stale.
 
     uv run --with pillow python scripts/update_named_user_photos.py            # dry run, no writes
     uv run --with pillow python scripts/update_named_user_photos.py --apply    # upload + commit
@@ -16,6 +21,7 @@ import argparse
 import asyncio
 import io
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -31,7 +37,7 @@ from app.core.database import AsyncSessionLocal  # noqa: E402
 from app.models.match_preference import MatchPreference  # noqa: E402,F401
 from app.models.pet_profile import PetProfile  # noqa: E402,F401
 from app.models.user import User  # noqa: E402
-from app.services.r2 import _client, build_user_photo_key, public_url  # noqa: E402
+from app.services.r2 import _client, public_url  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -98,7 +104,7 @@ async def main(apply: bool) -> int:
 
             raw = path.read_bytes()
             payload = process_image(raw)
-            key = build_user_photo_key(user.id, CONTENT_TYPE)
+            key = f"users/{user.id}/profile-{uuid.uuid4().hex[:8]}.jpg"
             new_url = public_url(key)
 
             print(
