@@ -1,9 +1,10 @@
-"""Replace the profile photo for a fixed set of named seeded users.
+"""Replace or clear the profile photo for a fixed set of named seeded users.
 
-Six of the pre-seeded demo accounts (see PEOPLE in seed_data.py) get a specific
-local image as their new profile_photo_url instead of the i.pravatar.cc image
-seed_realistic_data.py originally assigned them. Everything else about the
-account (email, bio, pets, matches...) is untouched.
+REPLACEMENTS entries get a specific local image as their new profile_photo_url
+instead of the i.pravatar.cc image seed_realistic_data.py originally assigned
+them. REMOVALS entries get profile_photo_url set back to NULL, so the UI falls
+back to its default letter-avatar. Everything else about each account (email,
+bio, pets, matches...) is untouched.
 
 Deliberately does NOT reuse the deterministic users/{id}/profile.jpg key
 seed_realistic_data.py writes to. r2.dev caches aggressively and an overwrite
@@ -52,13 +53,15 @@ SCREENSHOT_DIR = Path(r"C:\Users\Mani Mamidala\OneDrive\Pictures\Screenshots 1")
 
 # full_name (as stored in seed_data.py's PEOPLE list) -> source image on disk.
 REPLACEMENTS = {
-    "Arjun Reddy": SCREENSHOT_DIR / "Screenshot 2026-08-04 003815.png",
-    "Rahul Verma": SCREENSHOT_DIR / "Screenshot 2026-08-04 004008.png",
-    "Vikram Choudhary": SCREENSHOT_DIR / "Screenshot 2026-08-04 004104.png",
-    "Rohit Kulkarni": SCREENSHOT_DIR / "Screenshot 2026-08-04 004301.png",
-    "Meera Nair": SCREENSHOT_DIR / "Screenshot 2026-08-04 004512.png",
-    "Divya Menon": SCREENSHOT_DIR / "Screenshot 2026-08-04 004530.png",
+    "Siddharth Jain": SCREENSHOT_DIR / "Screenshot 2026-08-04 012839.png",
+    "Harika Vemuri": SCREENSHOT_DIR / "Screenshot 2026-08-04 013014.png",
+    "Nandini Sharma": SCREENSHOT_DIR / "Screenshot 2026-08-04 013200.png",
+    "Tarun Bhatt": SCREENSHOT_DIR / "Screenshot 2026-08-04 013305.png",
 }
+
+# full_name -> profile_photo_url reverted to NULL, so the UI falls back to its
+# default letter-avatar instead of any photo.
+REMOVALS = ["Lakshmi Prasad", "Pooja Agarwal"]
 
 
 def process_image(raw: bytes) -> bytes:
@@ -83,19 +86,18 @@ async def main(apply: bool) -> int:
             print(f"  {name}: {REPLACEMENTS[name]}")
         return 1
 
+    all_names = list(REPLACEMENTS.keys()) + REMOVALS
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(User).where(User.full_name.in_(REPLACEMENTS.keys()))
-        )
+        result = await session.execute(select(User).where(User.full_name.in_(all_names)))
         users = {u.full_name: u for u in result.scalars().all()}
 
-        not_found = [name for name in REPLACEMENTS if name not in users]
+        not_found = [name for name in all_names if name not in users]
         if not_found:
             print("No matching user row for:")
             for name in not_found:
                 print(f"  {name}")
 
-        print(f"\n{'Uploading' if apply else 'Would upload'} {len(users)} profile photo(s)\n")
+        print(f"\n{'Uploading' if apply else 'Would upload'} {len(REPLACEMENTS)} profile photo(s)\n")
 
         for name, path in REPLACEMENTS.items():
             user = users.get(name)
@@ -121,6 +123,16 @@ async def main(apply: bool) -> int:
                     ContentType=CONTENT_TYPE,
                 )
                 user.profile_photo_url = new_url
+
+        print(f"\n{'Clearing' if apply else 'Would clear'} {len(REMOVALS)} profile photo(s)\n")
+
+        for name in REMOVALS:
+            user = users.get(name)
+            if user is None:
+                continue
+            print(f"  {name:20} {user.id}  old={user.profile_photo_url}  new=None")
+            if apply:
+                user.profile_photo_url = None
 
         if apply:
             await session.commit()
