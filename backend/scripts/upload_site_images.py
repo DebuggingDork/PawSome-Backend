@@ -174,6 +174,23 @@ IMAGES = {
         crop=(1535, 803),
         quality=92,
     ),
+    # Poster frame for the product-demo video player (ProductDemoSection).
+    # Pulled from the demo recording itself at ~1.5s — the moment it pans
+    # across the How It Works section — rather than a separate stock photo,
+    # so the thumbnail is an honest preview of what actually plays. Browser
+    # chrome (tabs, bookmarks bar) was cropped off before this ever touched
+    # disk, same as every other frame of that recording.
+    #
+    # The source path was a session scratchpad temp file and is gone, same
+    # situation as heroPets above — a run that includes this entry prints
+    # SKIPPED. The live object in the bucket is correct; point this at a real
+    # file again (re-extract the frame from the video) before expecting a
+    # re-run to republish it.
+    "videoDemoThumbnail": SiteImage(
+        r"C:\Users\Mani Mamidala\AppData\Local\Temp\claude\D--PawSome\8b4ff892-2977-4052-97d1-0e48b9af351a\scratchpad\video_thumb_cropped.jpg",
+        "site/video-demo-thumbnail.jpg",
+        1600,
+    ),
 }
 
 
