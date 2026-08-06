@@ -39,9 +39,11 @@ async def browse_pets(
     db: AsyncSession = Depends(get_db),
 ):
     """Browsable directory of active pets — viewable without an account, like
-    the pet's own detail page. Coordinates are never exposed here. Owner info
-    (name, occupation, profile photo) is only attached for signed-in requests;
-    anonymous visitors see the pet but not who owns it.
+    the pet's own detail page. Coordinates are never exposed here. Anonymous
+    visitors see who owns each pet (name, photo) so the grid doesn't read as
+    a wall of anonymous stock photos, but not their occupation — that, and
+    the rest of the owner's profile, stays behind the "sign in to see the
+    owner" gate on the pet detail view.
 
     Pets the signed-in caller has already matched with are left out: that
     conversation lives in Matches/Chat now, and leaving them in the directory
@@ -105,7 +107,8 @@ async def browse_pets(
     items = [PetPublicResponse.model_validate(pet) for pet in pets]
     if user is None:
         for item in items:
-            item.owner = None
+            if item.owner is not None:
+                item.owner.occupation = None
 
     return PetListResponse(
         items=items,

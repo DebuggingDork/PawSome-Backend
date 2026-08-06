@@ -93,7 +93,7 @@ class PetPublicResponse(BaseModel):
     created_at: datetime
     primary_photo_url: str | None
     photos: list[PetPhotoResponse]
-    owner: PetOwnerBasicInfo | None  # Only populated for authenticated requests
+    owner: PetOwnerBasicInfo | None  # occupation is stripped for anonymous browse requests
     is_vaccinated: bool
     vaccination_date: date | None
     is_neutered: bool
